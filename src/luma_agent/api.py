@@ -1,8 +1,8 @@
 """HTTP client for the Luma Bistro reservation API.
 
 Every network concern the agent should not have to think about lives here:
-retries, timeouts, idempotency keys, and translating HTTP errors into a small
-set of typed failures the tool layer can branch on.
+retries, timeouts, idempotency keys, and turning HTTP errors into one exception
+carrying the API's own error code.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+from .rules import normalize_phone
 
 logger = logging.getLogger("luma.api")
 
@@ -38,43 +40,26 @@ class APICall:
     duration_ms: float
 
 
+# The API returns an error code on every failure, so the client passes that code
+# straight through rather than inventing a parallel class hierarchy for it. One
+# exception type, and callers branch on `err.code`.
+TEMPORARY = "TEMPORARY_FAILURE"
+SLOT_UNAVAILABLE = "SLOT_UNAVAILABLE"
+INVALID_SLOT = "INVALID_SLOT"
+NOT_FOUND = "NOT_FOUND"
+ALREADY_CANCELLED = "ALREADY_CANCELLED"
+
+
 class LumaAPIError(Exception):
-    """Base class for all reservation API failures."""
+    def __init__(self, code: str, detail: Any = None) -> None:
+        super().__init__(f"{code} {detail}" if detail else code)
+        self.code = code
+        self.detail = detail
 
-
-@dataclass
-class TransientError(LumaAPIError):
-    """Upstream is temporarily unavailable. Retried once, then surfaced."""
-
-    detail: str
-
-
-@dataclass
-class SlotUnavailable(LumaAPIError):
-    """The requested slot cannot fit the party. Carries API-supplied alternatives."""
-
-    alternatives: list[dict[str, Any]]
-
-
-class InvalidSlot(LumaAPIError):
-    """The date/time is not part of the bookable grid at all."""
-
-
-@dataclass
-class NotFound(LumaAPIError):
-    """No reservation with that id."""
-
-
-@dataclass
-class AlreadyCancelled(LumaAPIError):
-    """Reservation was already cancelled; cancelling again is a no-op."""
-
-
-@dataclass
-class ValidationError(LumaAPIError):
-    """The API rejected our arguments (422). Almost always a bad tool argument."""
-
-    detail: str
+    @property
+    def alternatives(self) -> list[dict[str, Any]]:
+        """Other open times, when the API supplied them with a 409."""
+        return self.detail.get("alternatives", []) if isinstance(self.detail, dict) else []
 
 
 def reservation_fingerprint(name: str, phone: str, date: str, time: str, party_size: int) -> str:
@@ -91,11 +76,6 @@ def reservation_fingerprint(name: str, phone: str, date: str, time: str, party_s
         ).encode()
     ).hexdigest()
     return f"luma-{digest[:32]}"
-
-
-def normalize_phone(value: str) -> str:
-    """Match the API's own normalization so search-by-phone actually matches."""
-    return "".join(c for c in value if c.isdigit() or c == "+")
 
 
 class LumaAPI:
@@ -128,7 +108,7 @@ class LumaAPI:
                 response = await self._client.request(method, path, **kwargs)
                 self._record(method, path, attempt, str(response.status_code), started)
                 if response.status_code >= 500 or response.status_code == 429:
-                    last_error = TransientError(_error_code(response))
+                    last_error = LumaAPIError(TEMPORARY, response.status_code)
                     logger.warning(
                         "api.transient",
                         extra={"path": path, "status": response.status_code, "attempt": attempt},
@@ -138,7 +118,7 @@ class LumaAPI:
                     return response.json()
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 self._record(method, path, attempt, type(exc).__name__, started)
-                last_error = TransientError(type(exc).__name__)
+                last_error = LumaAPIError(TEMPORARY, type(exc).__name__)
                 logger.warning("api.network", extra={"path": path, "error": str(exc)})
 
             if attempt < MAX_RETRIES:
@@ -169,20 +149,13 @@ class LumaAPI:
 
     @staticmethod
     def _raise_for_client_error(response: httpx.Response) -> None:
+        """Turn a 4xx into the API's own error code. 422s have no code, so they
+        become VALIDATION_ERROR, which always means we sent bad arguments."""
         if response.status_code < 400:
             return
         detail = _error_detail(response)
         code = detail.get("code") if isinstance(detail, dict) else None
-
-        if code == "SLOT_UNAVAILABLE":
-            raise SlotUnavailable(alternatives=detail.get("alternatives", []))
-        if code == "INVALID_SLOT":
-            raise InvalidSlot()
-        if code == "NOT_FOUND":
-            raise NotFound()
-        if code == "ALREADY_CANCELLED":
-            raise AlreadyCancelled()
-        raise ValidationError(detail=str(detail))
+        raise LumaAPIError(code or "VALIDATION_ERROR", detail)
 
     # --- Endpoints ----------------------------------------------------------
 
@@ -256,10 +229,3 @@ def _error_detail(response: httpx.Response) -> Any:
         return response.json().get("detail", response.text)
     except ValueError:
         return response.text
-
-
-def _error_code(response: httpx.Response) -> str:
-    detail = _error_detail(response)
-    if isinstance(detail, dict):
-        return str(detail.get("code", response.status_code))
-    return str(response.status_code)

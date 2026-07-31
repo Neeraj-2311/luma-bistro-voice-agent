@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from . import schedule
+from . import rules
 
 GREETING = "Thanks for calling Luma Bistro, this is Ava. How can I help you today?"
 
@@ -51,9 +51,10 @@ Today is {today}.
    question. Do not ask about special requests; record them only if the caller brings them up.
 4. When you have every detail, call read_back_booking and say what it gives you. Then stop and
    wait. Do not book in the same breath as the read-back.
-5. If the caller changes the date, time, or party size, check availability again and call
-   read_back_booking again with the new details. If they reply without changing anything,
-   acknowledge it in one short sentence and ask only "shall I book that?"
+5. If the caller changes the date, time, or party size: check availability again and call
+   read_back_booking again in the same turn, with the new details. Never ask again for a name or
+   phone number you already have. If they reply without changing anything, acknowledge it in one
+   short sentence and ask only "shall I book that?"
 6. Only after they say yes, call create_reservation with exactly the details you read back.
 7. Give them the confirmation code once, clearly.
 
@@ -98,5 +99,5 @@ def build_instructions(today: date_type | None = None) -> str:
     resolved = today or date_type.today()
     return _INSTRUCTIONS.format(
         today=resolved.strftime("%A, %B %-d, %Y"),
-        facts=_FACTS.format(window=schedule.describe_window()),
+        facts=_FACTS.format(window=rules.describe_calendar()),
     )

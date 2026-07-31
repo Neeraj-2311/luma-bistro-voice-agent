@@ -16,8 +16,7 @@ from livekit.agents.llm import ToolError
 
 from luma_agent.agent import ReservationAgent
 from luma_agent.api import reservation_fingerprint
-from luma_agent.state import CallState
-from luma_agent.validation import (
+from luma_agent.rules import (
     ArgumentError,
     parse_date,
     parse_time,
@@ -25,6 +24,7 @@ from luma_agent.validation import (
     validate_party_size,
     validate_phone,
 )
+from luma_agent.state import CallState
 
 TODAY = date(2026, 7, 31)
 

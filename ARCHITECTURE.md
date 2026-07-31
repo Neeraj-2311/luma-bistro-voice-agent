@@ -64,7 +64,7 @@ completed-but-discarded create is harmless.
 
 ### 4. How are tool arguments validated?
 
-In `validation.py`, before anything reaches the network. Every argument is normalized
+In `rules.py`, before anything reaches the network. Every argument is normalized
 first (`"6:30 PM"` → `18:30`, `"(310) 555-0199"` → `3105550199`, `"luma 4821"` →
 `LUMA-4821`) and then range-checked.
 
@@ -120,7 +120,7 @@ dropped, and the caller is never told the transfer succeeded when it did not.
 ### 8. Which production metrics and logs matter?
 
 **Latency, split by stage.** End-of-utterance delay, LLM time-to-first-token, and TTS
-time-to-first-byte are collected per turn and summed (`observability.py`). The sum is
+time-to-first-byte are collected per turn and summed (`metrics.py`). The sum is
 what the caller experiences; the split is what tells you which vendor to call when it
 regresses. A single blended number is not actionable.
 

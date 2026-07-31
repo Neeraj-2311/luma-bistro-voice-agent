@@ -1,7 +1,8 @@
-"""Turn a pytest run and the latency log into the assessment's results table.
+"""Build EVALUATION_RESULTS.md from a pytest run.
 
-Usage:
-    uv run pytest --json-report --json-report-file=evals/results/pytest.json
+Generated rather than hand-written so the numbers can never quietly drift from
+what the suite actually does.
+
     uv run python -m evals.report
 """
 
@@ -14,11 +15,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RESULTS_DIR = ROOT / "evals" / "results"
+RESULTS = ROOT / "evals" / "results"
 LATENCY_LOG = ROOT / "logs" / "latency.jsonl"
 OUTPUT = ROOT / "EVALUATION_RESULTS.md"
 
-# Maps the standard scenario ids onto the tests that cover them.
+# Scenario id -> (label, test name). Ids match starter/standard_test_cases.json;
+# E* are the extra failure cases the starter does not cover.
 SCENARIOS = {
     "T1": ("Create available reservation", "test_t1_create_available_reservation"),
     "T2": ("Unavailable time", "test_t2_unavailable_time_offers_real_alternatives"),
@@ -27,168 +29,115 @@ SCENARIOS = {
     "T5": ("Cancel existing reservation", "test_t5_cancel_existing_reservation"),
     "T6": ("Temporary API failure", "test_t6_transient_api_failure_recovers_silently"),
     "T7": ("Duplicate protection", "test_t7_repeated_create_never_duplicates"),
-}
-
-EXTRA = {
     "E1": ("Persistent failure escalates", "test_persistent_failure_escalates_to_human"),
     "E2": ("Oversized party handoff", "test_large_party_hands_off_with_context"),
     "E3": ("Invalid slot handled", "test_invalid_slot_is_not_presented_as_availability"),
 }
 
 
-def run_suite() -> dict:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = RESULTS_DIR / "pytest.json"
-    # Scenario records append; clear them so the report reflects only this run.
-    (RESULTS_DIR / "scenarios.jsonl").unlink(missing_ok=True)
+def run_pytest() -> tuple[dict[str, dict], dict[str, dict]]:
+    """Run the suite; return test outcomes and the per-scenario records conftest wrote."""
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    report, records = RESULTS / "pytest.json", RESULTS / "scenarios.jsonl"
+    records.unlink(missing_ok=True)
+
     proc = subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
             "tests",
-            "--json-report",
-            f"--json-report-file={report_path}",
             "-q",
+            f"--json-report-file={report}",
+            "--json-report",
         ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    sys.stdout.write(proc.stdout[-4000:])
-    if not report_path.exists():
+    sys.stdout.write(proc.stdout[-2000:])
+    if not report.exists():
         sys.exit("pytest produced no report; is pytest-json-report installed?")
-    return json.loads(report_path.read_text())
+
+    tests = {t["nodeid"].rsplit("::", 1)[-1]: t for t in json.loads(report.read_text())["tests"]}
+    rows = records.read_text().splitlines() if records.exists() else []
+    return tests, {r["test"]: r for r in map(json.loads, filter(None, rows))}
 
 
-def outcomes(report: dict) -> dict[str, dict]:
-    by_name = {}
-    for test in report.get("tests", []):
-        name = test["nodeid"].rsplit("::", 1)[-1]
-        by_name[name] = test
-    return by_name
-
-
-def latency_stats() -> dict[str, float | int]:
+def latency_table() -> list[str]:
     if not LATENCY_LOG.exists():
-        return {}
+        return ["_No live voice sessions recorded yet. Talk to the agent, then re-run._"]
+
     rows = [json.loads(line) for line in LATENCY_LOG.read_text().splitlines() if line.strip()]
+    if not rows:
+        return ["_No live voice sessions recorded yet._"]
+
+    def p50(field: str) -> int:
+        values = [r[field] for r in rows if r.get(field)]
+        return round(statistics.median(values)) if values else 0
+
     totals = sorted(r["total_ms"] for r in rows if r.get("total_ms"))
-    if not totals:
-        return {}
-    return {
-        "turns": len(totals),
-        "p50_ms": round(statistics.median(totals)),
-        "p95_ms": round(totals[min(int(len(totals) * 0.95), len(totals) - 1)]),
-        "eou_p50_ms": round(
-            statistics.median([r["eou_delay_ms"] for r in rows if r.get("eou_delay_ms")])
-        ),
-        "llm_ttft_p50_ms": round(
-            statistics.median([r["llm_ttft_ms"] for r in rows if r.get("llm_ttft_ms")])
-        ),
-        "tts_ttfb_p50_ms": round(
-            statistics.median([r["tts_ttfb_ms"] for r in rows if r.get("tts_ttfb_ms")])
-        ),
-    }
+    return [
+        "End-of-speech to first audio byte, from live browser sessions.",
+        "",
+        "| Stage | p50 |",
+        "|---|---:|",
+        f"| End-of-utterance detection | {p50('eou_delay')} ms |",
+        f"| LLM time to first token | {p50('llm_ttft')} ms |",
+        f"| TTS time to first byte | {p50('tts_ttfb')} ms |",
+        f"| **Total** | **{round(statistics.median(totals))} ms** |",
+        "",
+        f"Sample size: {len(totals)} turns.",
+    ]
 
 
-def scenario_records() -> dict[str, dict]:
-    path = RESULTS_DIR / "scenarios.jsonl"
-    if not path.exists():
-        return {}
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    return {r["test"]: r for r in rows}
-
-
-def render(report: dict) -> str:
-    tests = outcomes(report)
-    records = scenario_records()
+def render(tests: dict[str, dict], records: dict[str, dict]) -> str:
     lines = [
         "# Evaluation Results",
         "",
         "Generated by `uv run python -m evals.report`. Scenario scripts come from",
-        "`starter/standard_test_cases.json`; each test resets the API first.",
+        "`starter/standard_test_cases.json`; every test resets the API first.",
         "",
-        "| Test | Pass/Fail | Scenario | Tool calls | Writes | Dup/wrong write? | API reqs (retries) | API p50 |",
-        "|---|---|---|---|---|---|---|---:|",
+        "| Test | Result | Scenario | Tools called | Writes | API calls (retries) |",
+        "|---|---|---|---|---|---|",
     ]
 
     passed = 0
-    duplicates = 0
-    for sid, (label, test_name) in {**SCENARIOS, **EXTRA}.items():
-        test = tests.get(test_name)
+    for sid, (label, name) in SCENARIOS.items():
+        test = tests.get(name)
         if not test:
-            lines.append(f"| {sid} | NOT RUN | {label} | — | — | — | — | — |")
+            lines.append(f"| {sid} | NOT RUN | {label} | — | — | — |")
             continue
-        ok = test["outcome"] == "passed"
-        passed += ok
-        rec = records.get(test_name, {})
-
-        writes = rec.get("writes", [])
-        created = rec.get("reservations_created", 0)
-        # A duplicate would show as more writes than distinct reservations touched.
-        dup = created > 0 and len([w for w in writes if w == "create_reservation"]) > created
-        duplicates += dup
-
-        tool_calls = rec.get("tool_calls", [])
-        retries = rec.get("api_retries", 0)
-        p50 = rec.get("api_p50_ms")
+        passed += test["outcome"] == "passed"
+        rec = records.get(name, {})
         lines.append(
-            f"| {sid} | {'PASS' if ok else 'FAIL'} | {label} | "
-            f"{', '.join(tool_calls) or '—'} | {', '.join(writes) or 'none'} | "
-            f"{'YES' if dup else 'no'} | {rec.get('api_requests', 0)} ({retries}) | "
-            f"{f'{p50:.0f} ms' if p50 else '—'} |"
+            f"| {sid} | {'PASS' if test['outcome'] == 'passed' else 'FAIL'} | {label} | "
+            f"{', '.join(rec.get('tool_calls', [])) or '—'} | "
+            f"{', '.join(rec.get('writes', [])) or 'none'} | "
+            f"{rec.get('api_requests', 0)} ({rec.get('api_retries', 0)}) |"
         )
-        if not ok:
-            lines.append(f"| | | ↳ {_failure_reason(test)} | | | | | |")
 
-    total = len(SCENARIOS) + len(EXTRA)
     unit = [t for t in tests.values() if "test_tool_layer" in t["nodeid"]]
-    unit_passed = len([t for t in unit if t["outcome"] == "passed"])
+    duplicates = sum(
+        len([w for w in r.get("writes", []) if w == "create_reservation"])
+        > r.get("reservations_created", 0)
+        for r in records.values()
+    )
+
     lines += [
         "",
-        f"**Task success rate: {passed}/{total} ({passed / total:.0%})**  ",
-        f"**Duplicate-write rate: {duplicates}/{total}**  ",
-        f"**Tool-call accuracy: {passed}/{total}** "
-        "(every passing scenario asserts the exact tools and resulting API state)  ",
-        f"**Tool-layer unit tests: {unit_passed}/{len(unit)}** "
-        "(argument validation, safety gates, retry, handoff context — no LLM in the loop)",
+        f"**Task success: {passed}/{len(SCENARIOS)} ({passed / len(SCENARIOS):.0%})**  ",
+        f"**Duplicate writes: {duplicates}**  ",
+        f"**Tool-layer unit tests: {sum(t['outcome'] == 'passed' for t in unit)}/{len(unit)}** "
+        "(validation, safety gates, retry, handoff context — no LLM in the loop)",
         "",
         "## Voice latency",
         "",
+        *latency_table(),
     ]
-
-    stats = latency_stats()
-    if stats:
-        lines += [
-            "End-of-speech to first audio byte, measured from live browser sessions.",
-            "",
-            "| Stage | p50 |",
-            "|---|---:|",
-            f"| End-of-utterance detection | {stats['eou_p50_ms']} ms |",
-            f"| LLM time to first token | {stats['llm_ttft_p50_ms']} ms |",
-            f"| TTS time to first byte | {stats['tts_ttfb_p50_ms']} ms |",
-            f"| **Total (p50)** | **{stats['p50_ms']} ms** |",
-            f"| Total (p95) | {stats['p95_ms']} ms |",
-            "",
-            f"Sample size: {stats['turns']} turns.",
-        ]
-    else:
-        lines.append(
-            "_No live sessions recorded yet. Run the agent and talk to it, then re-run this._"
-        )
-
     return "\n".join(lines) + "\n"
 
 
-def _failure_reason(test: dict) -> str:
-    message = test.get("call", {}).get("longrepr", "")
-    for line in reversed(message.splitlines()):
-        if line.startswith("E "):
-            return line[2:].strip()[:160]
-    return "see pytest output"
-
-
 if __name__ == "__main__":
-    OUTPUT.write_text(render(run_suite()))
+    OUTPUT.write_text(render(*run_pytest()))
     print(f"\nWrote {OUTPUT.relative_to(ROOT)}")

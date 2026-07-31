@@ -16,20 +16,18 @@ from livekit.agents import Agent, RunContext, function_tool
 from livekit.agents.llm import ToolError
 
 from . import api as luma_api
-from . import schedule
+from . import rules
 from .api import (
-    AlreadyCancelled,
-    InvalidSlot,
+    ALREADY_CANCELLED,
+    INVALID_SLOT,
+    NOT_FOUND,
+    SLOT_UNAVAILABLE,
+    TEMPORARY,
     LumaAPI,
     LumaAPIError,
-    NotFound,
-    SlotUnavailable,
-    TransientError,
-    ValidationError,
 )
 from .prompts import build_instructions
-from .state import BookingProposal, CallState
-from .validation import (
+from .rules import (
     ArgumentError,
     parse_date,
     parse_time,
@@ -38,6 +36,7 @@ from .validation import (
     validate_party_size,
     validate_phone,
 )
+from .state import BookingProposal, CallState
 
 logger = logging.getLogger("luma.agent")
 
@@ -77,43 +76,43 @@ class ReservationAgent(Agent):
         # not taking bookings for must never be reported as an availability result,
         # and must never be answered by suggesting another time on that same date --
         # that sends the caller round a loop where every time fails identically.
-        if not schedule.is_bookable_date(date):
+        if not rules.is_bookable_date(date):
             return (
-                f"We are not taking bookings for {schedule.spoken_date(date)} at all. This is not a "
-                f"question of availability. {schedule.describe_window()} "
+                f"We are not taking bookings for {rules.spoken_date(date)} at all. This is not a "
+                f"question of availability. {rules.describe_calendar()} "
                 "Offer those dates. Do not suggest another time on this date."
             )
-        if not schedule.is_bookable_time(date, time):
-            offered = ", ".join(schedule.spoken_time(t) for t in schedule.bookable_times(date))
+        if not rules.is_bookable_time(date, time):
+            offered = ", ".join(rules.spoken_time(t) for t in rules.bookable_times(date))
             return (
-                f"We do not seat at {schedule.spoken_time(time)}. This is not a question of "
-                f"availability. On {schedule.spoken_date(date)} we seat at {offered}. "
+                f"We do not seat at {rules.spoken_time(time)}. This is not a question of "
+                f"availability. On {rules.spoken_date(date)} we seat at {offered}. "
                 "Offer those times."
             )
 
         try:
             result = await self.api.check_availability(date, time, party_size)
-        except InvalidSlot:
-            return (
-                f"{schedule.spoken_time(time)} on {schedule.spoken_date(date)} is not on our "
-                f"seating calendar. {schedule.describe_window()}"
-            )
-        except TransientError:
+        except LumaAPIError as exc:
+            if exc.code == INVALID_SLOT:
+                return (
+                    f"{rules.spoken_time(time)} on {rules.spoken_date(date)} is not on our "
+                    f"seating calendar. {rules.describe_calendar()}"
+                )
             raise ToolError(_SYSTEM_DOWN) from None
 
         if result["available"]:
             self.state.record_availability(date, time, party_size)
-            return f"{schedule.spoken_time(time)} on {date} is open for {party_size}."
+            return f"{rules.spoken_time(time)} on {date} is open for {party_size}."
 
         alternatives = result.get("alternatives") or []
         if not alternatives:
             return (
-                f"{schedule.spoken_time(time)} on {date} is full for {party_size} and nothing else is open "
+                f"{rules.spoken_time(time)} on {date} is full for {party_size} and nothing else is open "
                 "that day. Offer a different date."
             )
-        offered = ", ".join(schedule.spoken_time(a["time"]) for a in alternatives[:3])
+        offered = ", ".join(rules.spoken_time(a["time"]) for a in alternatives[:3])
         return (
-            f"{schedule.spoken_time(time)} on {date} is full for {party_size}. "
+            f"{rules.spoken_time(time)} on {date} is full for {party_size}. "
             f"These times are open instead: {offered}. Offer these exact times and nothing else."
         )
 
@@ -134,16 +133,16 @@ class ReservationAgent(Agent):
         except ArgumentError as exc:
             raise ToolError(str(exc)) from None
 
-        if not schedule.is_bookable_date(date):
+        if not rules.is_bookable_date(date):
             return (
-                f"We are not taking bookings for {schedule.spoken_date(date)} at all. "
-                f"{schedule.describe_window()} Offer those dates."
+                f"We are not taking bookings for {rules.spoken_date(date)} at all. "
+                f"{rules.describe_calendar()} Offer those dates."
             )
 
         # The API only answers one slot per request, so the day view is assembled
         # here by checking the day's seatings concurrently. This is the single
         # strongest argument for the API exposing a whole-day endpoint.
-        times = schedule.bookable_times(date)
+        times = rules.bookable_times(date)
         results = await asyncio.gather(
             *(self.api.check_availability(date, t, party_size) for t in times),
             return_exceptions=True,
@@ -164,16 +163,16 @@ class ReservationAgent(Agent):
         if not reachable:
             raise ToolError(_SYSTEM_DOWN)
         if not open_times:
-            others = [d for d in schedule.bookable_dates() if d != date]
-            return f"Nothing is open on {schedule.spoken_date(date)} for {party_size}. " + (
-                f"Offer another date: {', '.join(schedule.spoken_date(d) for d in others)}."
+            others = [d for d in rules.bookable_dates() if d != date]
+            return f"Nothing is open on {rules.spoken_date(date)} for {party_size}. " + (
+                f"Offer another date: {', '.join(rules.spoken_date(d) for d in others)}."
                 if others
                 else "There are no other dates open."
             )
 
-        offered = ", ".join(schedule.spoken_time(t) for t in open_times)
+        offered = ", ".join(rules.spoken_time(t) for t in open_times)
         return (
-            f"On {schedule.spoken_date(date)} these times are open for {party_size}: {offered}. "
+            f"On {rules.spoken_date(date)} these times are open for {party_size}: {offered}. "
             "Offer these exact times and nothing else."
         )
 
@@ -215,7 +214,7 @@ class ReservationAgent(Agent):
 
         if not self.state.is_verified(date, time, party_size):
             return (
-                f"You have not checked {schedule.spoken_time(time)} on {date} for {party_size}. "
+                f"You have not checked {rules.spoken_time(time)} on {date} for {party_size}. "
                 "Check availability first."
             )
 
@@ -230,8 +229,8 @@ class ReservationAgent(Agent):
         )
         logger.info("booking.read_back", extra={"date": date, "time": time, "party": party_size})
         return (
-            f"Say this and then wait for an answer: that is {name}, {_spoken_phone(phone)}, "
-            f"{schedule.spoken_date(date)} at {schedule.spoken_time(time)}, "
+            f"Say this and then wait for an answer: that is {name}, {rules.spoken_phone(phone)}, "
+            f"{rules.spoken_date(date)} at {rules.spoken_time(time)}, "
             f"for {party_size} guests"
             + (f", with a note: {notes}" if notes else "")
             + ". Ask if that is correct."
@@ -271,7 +270,7 @@ class ReservationAgent(Agent):
         # model from booking a time it hallucinated as open.
         if not self.state.is_verified(date, time, party_size):
             return (
-                f"You have not checked {schedule.spoken_time(time)} on {date} for {party_size}. "
+                f"You have not checked {rules.spoken_time(time)} on {date} for {party_size}. "
                 "Call check_availability first, then book only if it is open."
             )
 
@@ -300,7 +299,7 @@ class ReservationAgent(Agent):
                     "create.duplicate_suppressed", extra={"code": existing["confirmation_code"]}
                 )
                 return (
-                    f"This booking already exists under {_spell(existing['confirmation_code'])}. "
+                    f"This booking already exists under {rules.spell(existing['confirmation_code'])}. "
                     "Do not book again. Confirm the existing reservation to the caller."
                 )
 
@@ -308,19 +307,16 @@ class ReservationAgent(Agent):
             reservation = await self.api.create_reservation(
                 name, phone, date, time, party_size, notes
             )
-        except SlotUnavailable as exc:
-            offered = ", ".join(schedule.spoken_time(a["time"]) for a in exc.alternatives[:3])
-            return f"{schedule.spoken_time(time)} was taken before the booking went through. " + (
-                f"Open instead: {offered}. Offer these."
-                if offered
-                else "Nothing else is open that day."
-            )
-        except (InvalidSlot, ValidationError) as exc:
+        except LumaAPIError as exc:
+            if exc.code == SLOT_UNAVAILABLE:
+                return f"{rules.spoken_time(time)} was taken before the booking went through. " + (
+                    _offer(exc.alternatives) or "Nothing else is open that day."
+                )
+            if exc.code == TEMPORARY:
+                raise ToolError(_SYSTEM_DOWN) from None
             raise ToolError(
                 f"The booking system rejected these details: {exc}. Recheck with the caller."
             ) from None
-        except TransientError:
-            raise ToolError(_SYSTEM_DOWN) from None
 
         self._remember(reservation, fingerprint=fingerprint)
         self.state.name, self.state.phone, self.state.notes = name, phone, notes
@@ -334,8 +330,8 @@ class ReservationAgent(Agent):
             },
         )
         return (
-            f"Booked. Confirmation code {_spell(reservation['confirmation_code'])} for {name}, "
-            f"{party_size} guests, {date} at {schedule.spoken_time(time)}. Give the caller the code."
+            f"Booked. Confirmation code {rules.spell(reservation['confirmation_code'])} for {name}, "
+            f"{party_size} guests, {date} at {rules.spoken_time(time)}. Give the caller the code."
         )
 
     # --- Lookup -------------------------------------------------------------
@@ -367,7 +363,7 @@ class ReservationAgent(Agent):
             results = await self.api.search_reservations(
                 phone=phone, confirmation_code=confirmation_code
             )
-        except TransientError:
+        except LumaAPIError:
             raise ToolError(_SYSTEM_DOWN) from None
 
         active = [r for r in results if r["status"] != "cancelled"]
@@ -383,15 +379,15 @@ class ReservationAgent(Agent):
 
         if len(active) > 1:
             listed = "; ".join(
-                f"{_spell(r['confirmation_code'])} on {r['date']} at {schedule.spoken_time(r['time'])}"
+                f"{rules.spell(r['confirmation_code'])} on {r['date']} at {rules.spoken_time(r['time'])}"
                 for r in active
             )
             return f"Found {len(active)} reservations: {listed}. Ask which one they mean."
 
         found = active[0]
         return (
-            f"Found {_spell(found['confirmation_code'])}: {found['name']}, {found['party_size']} guests, "
-            f"{found['date']} at {schedule.spoken_time(found['time'])}"
+            f"Found {rules.spell(found['confirmation_code'])}: {found['name']}, {found['party_size']} guests, "
+            f"{found['date']} at {rules.spoken_time(found['time'])}"
             f"{', notes: ' + found['notes'] if found.get('notes') else ''}. "
             "Read this back before changing anything."
         )
@@ -433,27 +429,27 @@ class ReservationAgent(Agent):
 
         try:
             updated = await self.api.update_reservation(reservation["reservation_id"], **changes)
-        except SlotUnavailable as exc:
-            offered = ", ".join(schedule.spoken_time(a["time"]) for a in exc.alternatives[:3])
-            return "That new time is not available. " + (
-                f"Open instead: {offered}. Offer these."
-                if offered
-                else "Nothing else is open that day."
-            )
-        except InvalidSlot:
-            return f"That is not on our seating calendar. {schedule.describe_window()}"
-        except AlreadyCancelled:
-            return "That reservation is already cancelled, so it cannot be changed. Offer to book a new table."
-        except NotFound:
-            raise ToolError("That reservation no longer exists. Look it up again.") from None
-        except TransientError:
+        except LumaAPIError as exc:
+            if exc.code == SLOT_UNAVAILABLE:
+                return "That new time is not available. " + (
+                    _offer(exc.alternatives) or "Nothing else is open that day."
+                )
+            if exc.code == INVALID_SLOT:
+                return f"That is not on our seating calendar. {rules.describe_calendar()}"
+            if exc.code == ALREADY_CANCELLED:
+                return (
+                    "That reservation is already cancelled, so it cannot be changed. "
+                    "Offer to book a new table."
+                )
+            if exc.code == NOT_FOUND:
+                raise ToolError("That reservation no longer exists. Look it up again.") from None
             raise ToolError(_SYSTEM_DOWN) from None
 
         self._remember(updated)
         logger.info("reservation.modified", extra={"code": updated["confirmation_code"], **changes})
         return (
-            f"Updated {_spell(updated['confirmation_code'])}: {updated['party_size']} guests, "
-            f"{updated['date']} at {schedule.spoken_time(updated['time'])}. Confirm this back to the caller."
+            f"Updated {rules.spell(updated['confirmation_code'])}: {updated['party_size']} guests, "
+            f"{updated['date']} at {rules.spoken_time(updated['time'])}. Confirm this back to the caller."
         )
 
     @function_tool()
@@ -466,18 +462,18 @@ class ReservationAgent(Agent):
         reservation = self._resolve(confirmation_code)
 
         if reservation.get("status") == "cancelled":
-            return f"{_spell(reservation['confirmation_code'])} was already cancelled. Say so and do not cancel again."
+            return f"{rules.spell(reservation['confirmation_code'])} was already cancelled. Say so and do not cancel again."
 
         try:
             cancelled = await self.api.cancel_reservation(reservation["reservation_id"])
-        except NotFound:
-            raise ToolError("That reservation no longer exists.") from None
-        except TransientError:
+        except LumaAPIError as exc:
+            if exc.code == NOT_FOUND:
+                raise ToolError("That reservation no longer exists.") from None
             raise ToolError(_SYSTEM_DOWN) from None
 
         self._remember(cancelled)
         logger.info("reservation.cancelled", extra={"code": cancelled["confirmation_code"]})
-        return f"Cancelled {_spell(cancelled['confirmation_code'])}. Confirm the cancellation to the caller."
+        return f"Cancelled {rules.spell(cancelled['confirmation_code'])}. Confirm the cancellation to the caller."
 
     # --- Escalation ---------------------------------------------------------
 
@@ -533,27 +529,17 @@ class ReservationAgent(Agent):
         return reservation
 
 
+def _offer(alternatives: list[dict[str, Any]]) -> str:
+    """Phrase the API's alternative times, or empty if it gave none."""
+    times = ", ".join(rules.spoken_time(a["time"]) for a in alternatives[:3])
+    return f"Open instead: {times}. Offer these." if times else ""
+
+
 def _clean_slot(date: str, time: str, party_size: int) -> tuple[str, str, int]:
     try:
         return parse_date(date), parse_time(time), validate_party_size(party_size)
     except ArgumentError as exc:
         raise ToolError(str(exc)) from None
-
-
-def _spoken_phone(value: str) -> str:
-    """Group digits so TTS reads a number back at dictation speed."""
-    digits = [c for c in value if c.isdigit()]
-    if len(digits) == 11 and digits[0] == "1":
-        digits = digits[1:]
-    if len(digits) != 10:
-        return " ".join(digits)
-    groups = ["".join(digits[0:3]), "".join(digits[3:6]), "".join(digits[6:10])]
-    return ", ".join(" ".join(g) for g in groups)
-
-
-def _spell(code: str) -> str:
-    """Space out a confirmation code so TTS reads it character by character."""
-    return " ".join(code.replace("-", " "))
 
 
 def _messages(ctx: RunContext) -> list[Any]:

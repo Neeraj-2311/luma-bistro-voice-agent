@@ -43,6 +43,9 @@ uv run python -m evals.report      # runs pytest, writes EVALUATION_RESULTS.md
 
 ---
 
+New to the code? Start with **[CODE_WALKTHROUGH.md](CODE_WALKTHROUGH.md)** — every
+file in one sentence, and every design decision with its reasoning.
+
 ## Architecture
 
 ```
@@ -60,14 +63,13 @@ Browser ──WebRTC──> LiveKit Cloud ──> Agent worker (Python)
 
 | Module | Responsibility |
 |---|---|
-| `src/luma_agent/main.py` | Worker entrypoint, pipeline config, metrics wiring |
-| `src/luma_agent/agent.py` | The agent and its seven tools |
-| `src/luma_agent/api.py` | HTTP client: retries, timeouts, idempotency keys, typed errors |
-| `src/luma_agent/schedule.py` | Which dates and times exist on the booking calendar |
-| `src/luma_agent/validation.py` | Normalizes and range-checks every tool argument |
-| `src/luma_agent/state.py` | Per-call state: collected details, verified slots, read-back proposal |
-| `src/luma_agent/observability.py` | Per-turn latency stitching, JSONL output |
-| `src/luma_agent/prompts.py` | System instructions |
+| `src/luma_agent/main.py` | Builds the voice pipeline, starts one agent per call |
+| `src/luma_agent/agent.py` | The eight tools — everything the agent can do |
+| `src/luma_agent/api.py` | Reservation API client: retries, timeouts, idempotency |
+| `src/luma_agent/rules.py` | What inputs are legal, and which dates/times exist |
+| `src/luma_agent/state.py` | Per-call memory: collected details, verified slots, read-back |
+| `src/luma_agent/prompts.py` | What the agent is told |
+| `src/luma_agent/metrics.py` | Per-turn latency, split by stage |
 | `tests/test_standard_scenarios.py` | T1–T7 plus three failure cases, driving the real agent |
 | `tests/test_tool_layer.py` | Argument validation and safety gates, no LLM in the loop |
 
@@ -133,7 +135,7 @@ unavailable and offered a different time *on the same impossible date*, which pr
 endless loop and, worse, a fabricated shrinking list of "available" times assembled from
 accumulated failures.
 
-`schedule.py` now owns the booking grid — which dates and times exist at all — separately
+`rules.py` now owns the booking calendar — which dates and times exist at all — separately
 from availability, which only the API can answer. A date outside the calendar is rejected
 before any request is sent, with a message that names the dates that are open and
 explicitly forbids suggesting another time. The distinction is load-bearing: conflating
@@ -225,7 +227,7 @@ the number, rather than guessing, is the practical argument for the cascaded pip
   loses collected details. See scaling below.
 - **Booking grid is narrow, and the agent learns it from seed data.** The mock API
   accepts six times across three dates and does not expose that grid over HTTP, so
-  `schedule.py` reads it from the fixed `starter/seed_data.json`. In production this
+  `rules.py` reads it from the fixed `starter/seed_data.json`. In production this
   would be a `GET /schedule` call; the coupling is a workaround for a missing endpoint,
   not a design preference.
 - **No caller authentication.** Anyone with a confirmation code can cancel a booking.

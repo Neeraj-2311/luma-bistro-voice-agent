@@ -20,7 +20,7 @@ from livekit.plugins import cartesia, deepgram, openai, silero
 
 from .agent import ReservationAgent
 from .api import LumaAPI
-from .observability import LatencyTracker
+from .metrics import LatencyTracker
 from .prompts import GREETING
 from .state import CallState
 
