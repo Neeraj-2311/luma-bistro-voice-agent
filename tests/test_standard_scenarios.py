@@ -38,9 +38,12 @@ async def test_t1_create_available_reservation(harness, judge_llm):
     assert "check_availability" in harness.tool_calls()
     assert harness.writes() == ["create_reservation"], "exactly one write expected"
 
-    await last_reply(result).judge(
-        judge_llm, intent="States the booking is confirmed and gives a confirmation code."
-    )
+    # Checked directly rather than judged. Whether a spoken code "reads clearly" is a
+    # subjective call an LLM judge answers differently run to run; whether the caller was
+    # told the booking is confirmed and given the code is not.
+    spoken = last_reply(result).event().item.text_content
+    assert "confirm" in spoken.lower(), spoken
+    assert "L U M A" in spoken, f"the code must be spelled out for TTS: {spoken}"
 
 
 async def test_t2_unavailable_time_offers_real_alternatives(harness, judge_llm):
