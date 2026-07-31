@@ -1,0 +1,42 @@
+# Fly.io config for the Luma Bistro agent worker.
+#
+# Region is the whole point: the latency probe (evals/latency_probe.py) showed
+# ~75% of LLM time-to-first-token was the round trip from India to OpenAI's US
+# origin. Running the worker in Virginia removes that. The caller's audio is
+# unaffected -- LiveKit still terminates their media at an edge near them and
+# backhauls to wherever this worker happens to be.
+
+app = "luma-bistro-agent"
+primary_region = "iad"   # US East (Virginia), nearest to OpenAI
+
+[build]
+
+[env]
+  # The mock API runs inside this container, alongside the worker.
+  LUMA_API_BASE_URL = "http://127.0.0.1:8000"
+  LOG_LEVEL = "INFO"
+
+[http_service]
+  # LiveKit's worker health endpoint. The worker itself needs no inbound traffic
+  # -- it dials out to LiveKit -- but exposing health lets Fly tell a wedged
+  # worker from a healthy one.
+  internal_port = 8081
+  force_https = true
+  # Never scale to zero: a sleeping worker is not registered with LiveKit, so a
+  # caller would find no agent at all rather than a slow one.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/"
+
+[[vm]]
+  # The pipeline is I/O-bound (three streaming providers), not compute-bound.
+  # Silero VAD is the only local model and it is small.
+  size = "shared-cpu-1x"
+  memory = "1gb"
