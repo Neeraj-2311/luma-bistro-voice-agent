@@ -11,3 +11,4 @@ logs/
 *.jsonl
 !evals/results/*.jsonl
 .gstack/
+livekit.toml
