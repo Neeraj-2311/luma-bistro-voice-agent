@@ -1,15 +1,19 @@
 # Luma Bistro — Real-time Voice Reservation Agent
 
-A browser-based voice agent that takes, changes, and cancels restaurant reservations
-over WebRTC. Built on LiveKit Agents with a cascaded speech pipeline.
+A browser voice agent that books, changes, and cancels restaurant tables over WebRTC.
 
-- **Agent:** Python, [LiveKit Agents 1.6](https://docs.livekit.io/agents/)
-- **STT:** Deepgram `nova-3` (streaming, interim results)
-- **LLM:** OpenAI `gpt-4.1-mini`
-- **TTS:** Cartesia `sonic-3` (streaming)
-- **Turn detection:** LiveKit semantic turn detector + Silero VAD
-- **Transport:** LiveKit Cloud WebRTC, Next.js frontend
-- **Backend:** the starter package's FastAPI mock API, unmodified
+| | |
+|---|---|
+| Agent | Python, [LiveKit Agents 1.6](https://docs.livekit.io/agents/) |
+| STT | Deepgram `nova-3`, streaming |
+| LLM | OpenAI `gpt-4.1-mini` |
+| TTS | Cartesia `sonic-3`, streaming |
+| Turn detection | LiveKit semantic turn detector + Silero VAD |
+| Transport | LiveKit Cloud WebRTC, Next.js frontend |
+| Backend | the starter's FastAPI mock API, unmodified |
+
+Also here: [EVALUATION_RESULTS.md](EVALUATION_RESULTS.md) for scenario results and measured
+latency, [ARCHITECTURE.md](ARCHITECTURE.md) for the twelve questions in the starter package.
 
 ---
 
@@ -17,33 +21,31 @@ over WebRTC. Built on LiveKit Agents with a cascaded speech pipeline.
 
 **Prerequisites**
 
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- Node 20 or newer, for the frontend
-- Accounts with LiveKit Cloud, Deepgram, OpenAI, and Cartesia. All four have a free tier
-  that covers this.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/): `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Node 20 or newer
+- Accounts with LiveKit Cloud, Deepgram, OpenAI, Cartesia. Free tiers cover this.
 
-`uv sync` creates `.venv`, and every Python command below is prefixed with `uv run`, which
-uses that environment automatically — **there is no virtualenv to activate, in any
-terminal**. If you prefer, `source .venv/bin/activate` works and lets you drop the prefix.
-The frontend terminal is Node only and never touches the venv.
+`uv sync` creates `.venv`, and every Python command below starts with `uv run`, which uses
+it automatically. There is no virtualenv to activate in any terminal. The frontend terminal
+is Node only. If you prefer, `source .venv/bin/activate` lets you drop the prefix.
 
 ```bash
 # 1. Install
 uv sync                      # creates .venv from uv.lock
 npm --prefix web install
 
-# 2. Credentials — two files, because the agent and the frontend are separate processes
-cp .env.example .env                 # agent: LiveKit + Deepgram + OpenAI + Cartesia
-cp web/.env.example web/.env.local   # frontend: the same LiveKit values
+# 2. Credentials. Two files: the agent and the frontend are separate processes.
+cp .env.example .env                 # LiveKit + Deepgram + OpenAI + Cartesia
+cp web/.env.example web/.env.local   # the same LiveKit values
 ```
 
-Fill both in. The frontend reuses the agent's LiveKit URL, key, and secret, and needs
-`AGENT_NAME=luma-bistro` to match the name the worker registers under.
+The frontend reuses the agent's LiveKit URL, key, and secret. It also needs
+`AGENT_NAME=luma-bistro`, matching the name the worker registers under.
 
 ```bash
 # 3. Mock reservation API                        (terminal 1)
 uv run uvicorn app:app --app-dir starter --port 8000
-#    or, if you prefer the starter's container:  cd starter && docker compose up --build
+#    or the starter's container:                 cd starter && docker compose up --build
 
 # 4. Agent worker                                (terminal 2)
 uv run python -m luma_agent.main dev
@@ -52,276 +54,225 @@ uv run python -m luma_agent.main dev
 npm --prefix web run dev                         # http://localhost:3000
 ```
 
-Terminal 2 should print `registered worker` with `"agent_name": "luma-bistro"`. That line
-means the agent is connected and waiting; without it the page loads but nobody answers.
+Terminal 2 should print `registered worker` with `"agent_name": "luma-bistro"`. Without
+that line the page loads but nobody answers.
 
-Open <http://localhost:3000>, click **Call the restaurant**, allow the microphone, and talk.
+Open <http://localhost:3000>, click **Call the restaurant**, allow the mic, and talk.
 
-To try the agent without a browser, `uv run python -m luma_agent.main console` runs a voice
-session straight in the terminal. Note that ending a call is a no-op there — the SDK skips
-room deletion in console mode — so use the browser to exercise that path.
+`uv run python -m luma_agent.main console` gives you a voice session in the terminal with
+no browser. Ending a call is a no-op there, since the SDK skips room deletion in console
+mode, so use the browser to test that path.
 
-Run the scenario suite, and the latency diagnosis:
+Tests and the latency breakdown:
 
 ```bash
 uv run python -m evals.report         # runs pytest, writes EVALUATION_RESULTS.md
 uv run python -m evals.latency_probe  # decomposes LLM time-to-first-token
 ```
 
-Also in this repo:
-
-- **[EVALUATION_RESULTS.md](EVALUATION_RESULTS.md)** — the standard scenarios, tool calls,
-  duplicate-write rate, and measured latency.
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — answers to the twelve questions in
-  `starter/ARCHITECTURE_QUESTIONS.md`.
-
 ---
 
 ## Architecture
 
-### The path of one turn
+### One turn, end to end
 
 ```
   Caller speaks
        │  Opus 48 kHz over WebRTC
        ▼
-  LiveKit edge (nearest to the caller)
+  LiveKit edge (nearest the caller)
        │
        ▼
-  ┌─────────────────────── Agent worker, one process per call ───────────────────────┐
-  │                                                                                  │
-  │  1  VAD            Silero, local        is this speech or silence?               │
-  │        │                                                                         │
-  │        ▼                                                                         │
-  │  2  STT            Deepgram nova-3      streams partial text as they talk        │
-  │        │                                                                         │
-  │        ▼                                                                         │
-  │  3  Turn detector  LiveKit semantic     have they finished, or just paused?      │
-  │        │                                                    ── end of turn ──    │
-  │        ▼                                                                         │
-  │  4  LLM            gpt-4.1-mini         answer, or call a tool?                  │
-  │        │                                                                         │
-  │        ▼                                                                         │
-  │  5  Tools          validate → gate → HTTP client → reservation API               │
-  │        │                                 (retry, idempotency)                    │
-  │        ▼                                                                         │
-  │  6  LLM            turns the tool result into something speakable                │
-  │        │                                                                         │
-  │        ▼                                                                         │
-  │  7  TTS            Cartesia sonic-3     streams audio as tokens arrive           │
-  │                                                                                  │
-  └──────────────────────────────────┬───────────────────────────────────────────────┘
-                                     ▼
-                            LiveKit edge → caller hears the reply
+  ┌──────────────── Agent worker, one process per call ────────────────┐
+  │                                                                    │
+  │  1  VAD            Silero, local     speech or silence?            │
+  │  2  STT            Deepgram nova-3   partial text as they talk     │
+  │  3  Turn detector  LiveKit semantic  finished, or just pausing?    │
+  │  4  LLM            gpt-4.1-mini      answer, or call a tool?       │
+  │  5  Tools          validate → gate → HTTP → reservation API        │
+  │  6  LLM            turn the result into something speakable        │
+  │  7  TTS            Cartesia sonic-3  audio streams as tokens land  │
+  │                                                                    │
+  └────────────────────────────┬───────────────────────────────────────┘
+                               ▼
+                      LiveKit edge → caller hears the reply
 ```
 
-**1. VAD** — frame-level speech detection, running locally so it costs nothing per call.
-It gates what reaches the STT and is what notices the caller talking over the agent.
+**VAD** runs locally, so it costs nothing per call. It also notices the caller talking over
+the agent.
 
-**2. STT** — streaming with interim results. Partial text arrives *while* the caller is
-still speaking, which is what lets the next two stages start early.
+**STT** streams interim results, so text arrives while the caller is still speaking. That is
+what lets the next two stages start early.
 
-**3. Turn detection** — the decision that makes a voice agent feel human. A silence timer
-cuts people off mid-sentence ("my number is three one zero… five five five"); a semantic
-detector reads the transcript and the acoustics together and waits for a real ending.
+**Turn detection** is the piece that makes this feel human. A silence timer cuts people off
+mid-sentence ("my number is three one zero… five five five"). A semantic detector reads the
+transcript and the acoustics together and waits for a real ending.
 
-**4. LLM** — the only stage that decides anything. Tool calls are serialized
-(`parallel_tool_calls=False`) so it cannot check availability and book in the same breath.
-Generation starts on the in-progress transcript *before* end-of-turn is confirmed; tool
-execution still waits for the turn to commit, so nothing is written speculatively.
+**LLM** is the only stage that decides anything. Tool calls are serialized
+(`parallel_tool_calls=False`) so it cannot check availability and book in one breath.
+Generation starts on the in-progress transcript, but tool execution waits for the turn to
+commit, so nothing is written speculatively.
 
-**5. Tools** — arguments are normalized and range-checked, safety gates run, then one HTTP
-client owns retries and idempotency. Tools return sentences, not JSON, because the model
-reads them straight into speech.
+**Tools** normalize and range-check arguments, run the safety gates, then hand off to one
+HTTP client that owns retries and idempotency. They return sentences, not JSON, because the
+model reads them straight into speech.
 
-**6. LLM again** — the tool result comes back and becomes a spoken reply.
+**TTS** streams chunk by chunk, so the caller hears the first word while the last is still
+being written.
 
-**7. TTS** — streams audio chunk by chunk as tokens arrive rather than waiting for the
-whole sentence, so the caller hears the first word while the last is still being written.
+**On interruption**, VAD fires mid-reply. The LLM and TTS streams cancel, playback stops,
+and the assistant's message is truncated in the chat context to only the words the caller
+actually heard. Skip that last part and the next turn is built on a sentence they never got.
 
-**If the caller interrupts**, VAD fires mid-reply: the LLM and TTS streams are cancelled,
-playback stops, and — the part that matters for correctness — the assistant's message is
-truncated in the chat context to only the words the caller actually heard. Without that,
-the next turn is built on a sentence they never received.
-
-**Where the latency numbers come from.** The three measurements in
-[EVALUATION_RESULTS.md](EVALUATION_RESULTS.md) are taken at exactly these boundaries:
-end-of-utterance delay at step 3, LLM time-to-first-token at step 4, TTS time-to-first-byte
-at step 7. Their sum is the gap the caller hears.
+The three latency numbers in [EVALUATION_RESULTS.md](EVALUATION_RESULTS.md) are measured at
+steps 3, 4, and 7. Their sum is the gap the caller hears.
 
 ### Modules
 
 | Module | Responsibility |
 |---|---|
-| `src/luma_agent/main.py` | Builds the voice pipeline, starts one agent per call |
-| `src/luma_agent/agent.py` | The nine tools — everything the agent can do |
+| `src/luma_agent/main.py` | Builds the pipeline, starts one agent per call |
+| `src/luma_agent/agent.py` | The nine tools |
 | `src/luma_agent/api.py` | Reservation API client: retries, timeouts, idempotency |
-| `src/luma_agent/rules.py` | What inputs are legal, and which dates/times exist |
-| `src/luma_agent/state.py` | Per-call memory: collected details, verified slots, read-back |
+| `src/luma_agent/rules.py` | Legal inputs, and which dates and times exist |
+| `src/luma_agent/state.py` | Per-call memory: details, verified slots, read-back |
 | `src/luma_agent/prompts.py` | What the agent is told |
 | `src/luma_agent/metrics.py` | Per-turn latency, split by stage |
-| `tests/test_standard_scenarios.py` | T1–T7 plus three failure cases, driving the real agent |
-| `tests/test_tool_layer.py` | Argument validation and safety gates, no LLM in the loop |
+| `tests/test_standard_scenarios.py` | T1–T7 plus three failure cases, real agent |
+| `tests/test_tool_layer.py` | Validation and safety gates, no LLM |
 
 ---
 
 ## Major decisions
 
-### Cascaded pipeline, not a speech-to-speech model
+### Cascaded pipeline over speech-to-speech
 
-A realtime model would shave roughly 200–300 ms off each turn. I chose the cascaded
-path anyway, because this task is dominated by tool correctness rather than prosody:
+A realtime model saves roughly 200–300 ms per turn. This task is dominated by tool
+correctness, not prosody, so I took the trade:
 
-- **Tool calling is more reliable** on a text LLM than on current realtime models,
-  and a wrong `party_size` is a worse failure than a slightly slower reply.
-- **Per-stage latency is measurable.** The assessment asks for latency numbers;
-  a cascaded pipeline reports EOU delay, LLM TTFT, and TTS TTFB separately, so a
-  regression can be attributed to a stage instead of guessed at.
-- **Every stage is swappable and independently testable.** The scenario suite drives
-  the exact same agent and tools over text, with no audio involved.
-- **Cost** is roughly an order of magnitude lower per minute.
+- Tool calling is more reliable on a text LLM. A wrong `party_size` is worse than a slower
+  reply.
+- Per-stage latency is measurable, so a regression can be attributed instead of guessed at.
+- Every stage is swappable and testable. The scenario suite drives the same agent over text.
+- Roughly an order of magnitude cheaper per minute.
 
-### Duplicate prevention is structural, not prompted
+### Duplicate writes are impossible, not unlikely
 
-`POST /reservations` needs an `Idempotency-Key`. Rather than generating a UUID per
-call, the key is a SHA-256 of the booking's identity — name, phone, date, time, party
-size (`api.reservation_fingerprint`). The LLM never sees it.
+`POST /reservations` needs an `Idempotency-Key`. Instead of a UUID per call, the key is a
+SHA-256 of the booking itself: name, phone, date, time, party size
+(`api.reservation_fingerprint`). The LLM never sees it.
 
-This means a duplicate write is impossible by construction, not merely unlikely: if
-the model calls `create_reservation` twice — a retry, a garbled confirmation, a
-repeated tool call — both requests carry the same key and the API returns the
-original reservation. A second, in-process guard short-circuits the repeat before it
-even reaches the network.
+Two identical create attempts therefore carry the same key, and the API returns the original
+row. A retry, a garbled confirmation, a repeated tool call all collapse to one reservation.
+An in-process guard catches the repeat before it even reaches the network.
 
-It also makes `POST` safe to retry, which is why the HTTP client retries writes at all.
+This is also why the HTTP client is willing to retry a `POST` at all.
 
 ### The agent cannot book a slot it never checked
 
-`create_reservation` refuses to write unless `check_availability` previously returned
-"open" for that exact date, time, and party size (`state.verified_slots`). "Do not
-invent availability" is therefore enforced in code rather than requested in a prompt.
-The same idea guards modify and cancel: those tools take a **confirmation code**, never
-an internal reservation id, and resolve it against reservations this call actually
-looked up — so the model cannot act on a booking it has not retrieved.
+`create_reservation` refuses to write unless `check_availability` already returned "open"
+for that exact date, time, and party size. "Do not invent availability" is enforced in code,
+not asked for in a prompt.
 
-### Confirmation is a two-phase commit
-
-Booking is split across two tools. `read_back_booking` records exactly what was recited
-to the caller and on which turn; `create_reservation` refuses to write anything that
-does not match that proposal, and refuses to write at all until the caller has spoken
-again since hearing it.
-
-This started as a prompt rule and a turn-count heuristic, and it failed about one run in
-six: the model would occasionally read the details back and book them in the same breath,
-so a correction on the next turn arrived after the write. Making the read-back a recorded
-artifact rather than a hoped-for behaviour turned "confirm before booking" into something
-the code guarantees. A correction now invalidates the previous proposal by construction.
+Modify and cancel take a confirmation code, never an internal reservation id, and resolve it
+against bookings this call actually looked up. The model cannot touch something it never
+retrieved.
 
 ### Nothing is written in the same breath as the caller's words
 
-The same rule covers all three writes, in code rather than in the prompt. A booking
-cannot be created unless it matches a read-back the caller has since responded to, and
-a reservation cannot be modified or cancelled in the same turn it was looked up. In
-every case the caller must have spoken *after* hearing what is about to happen.
+`read_back_booking` records what was recited and on which turn. `create_reservation` refuses
+anything that does not match, and refuses until the caller has spoken since. Modify and
+cancel are gated the same way: not in the same turn as the lookup.
 
-Silence gets the same treatment. A prompt rule cannot handle a caller going quiet,
-because silence produces no turn for the model to respond to — so the session reports
-the caller as away after 12 seconds and `main.py` drives the recovery directly: check in
-once, then say goodbye and hang up rather than holding a dead line open.
+This started as a prompt rule with a turn-count check and failed about one run in six. The
+model would read the details back and book them in one breath, so a correction on the next
+turn landed after the write. Making the read-back a recorded artifact turned it into
+something the code guarantees.
 
-### The agent can hang up, and always says goodbye first
+Silence gets handled in `main.py` rather than the prompt, because silence produces no turn
+for the model to react to. The session reports the caller away after 12 seconds: one
+check-in, then goodbye and hang up.
 
-Three paths end a call: the caller is done (`end_call`), the caller is handed to a person
-(`transfer_to_human`), or the caller has gone quiet twice. All three route through one
-helper that waits for the farewell to finish playing before closing the room — returning
-the sign-off as text instead would cut it off mid-word, because the room would already be
-gone. A transfer that leaves the agent on the line is not a transfer, and an abandoned
-call that never closes holds a concurrent session and keeps billing three providers for
-silence.
+### Ending a call
 
-### "That date is closed" and "that time is full" are different failures
+Three paths close a call: the caller is done (`end_call`), they are handed to a person
+(`transfer_to_human`), or they have gone quiet twice. All three run through one helper that
+waits for the farewell to finish playing before closing the room. Return the sign-off as
+text instead and it gets cut off mid-word, because the room is already gone.
 
-The mock API only holds three dates, and any other date 422s per-slot. The first version
-of this agent treated that as an availability answer: it told the caller the time was
-unavailable and offered a different time *on the same impossible date*, which produced an
-endless loop and, worse, a fabricated shrinking list of "available" times assembled from
-accumulated failures.
+A transfer that leaves the agent on the line is not a transfer. An abandoned call that never
+closes holds a concurrent session and keeps billing three providers for silence.
 
-`rules.py` now owns the booking calendar — which dates and times exist at all — separately
+### "That date is closed" and "that time is full" are different answers
+
+The mock API holds three dates. Any other date 422s per slot. The first version treated that
+as an availability answer, told the caller the time was unavailable, and offered a different
+time on the same impossible date. The result was an endless loop and a fabricated shrinking
+list of "available" times assembled from the failures.
+
+`rules.py` now owns the booking calendar, which dates and times exist at all, separately
 from availability, which only the API can answer. A date outside the calendar is rejected
-before any request is sent, with a message that names the dates that are open and
-explicitly forbids suggesting another time. The distinction is load-bearing: conflating
-the two is how an agent ends up inventing availability.
+before any request goes out, and the message names the dates that are open. Conflating those
+two is how an agent ends up inventing availability.
 
-### The day view is assembled client-side
+### The day view is built client-side
 
-Callers ask "what do you have on Saturday?" far more often than they name an exact time,
-but `GET /availability` answers one slot per request and the starter API is fixed.
-`find_available_times` fans out across that day's seatings concurrently and returns only
-the times with room, pre-verifying each so the caller can pick any of them without a
-second lookup. It costs six parallel requests where one should do, which is the clearest
-argument for the API change described below.
+Callers ask "what do you have on Saturday?" more often than they name a time, but
+`GET /availability` answers one slot per request and the starter API is fixed.
+`find_available_times` checks that day's seatings concurrently and returns only the ones with
+room, pre-verifying each so the caller can pick any without a second lookup. Six parallel
+requests to answer one ordinary question, which is the clearest argument for the API change
+noted below.
 
-### Retries are enforced in the HTTP client, not by the model
+### Retries live in the HTTP client
 
 The mock API fails the first `/availability` call for 2026-08-16 with a 503. The client
-retries once, after 500 ms, and the model never learns it happened.
+retries once after 500 ms and the model never learns it happened.
 
-Two reasons. First, "at most one retry" becomes a guarantee instead of something a
-prompt asks for and a model may or may not honour. Second, a blip that clears in half a
-second should not cost the caller an audible "let me try that again". When both attempts
-fail, the tool raises and the agent tells the caller and offers a human — it never
-fabricates a result. Only 5xx, 429, and transport errors retry; 4xx never does, because
-a bad argument will not fix itself.
+Two reasons. "At most one retry" becomes a guarantee rather than something a prompt asks for.
+And a blip that clears in half a second should not cost the caller an audible "let me try
+that again". When both attempts fail the tool raises, and the agent says so and offers a
+human. It never fabricates a result.
+
+Only 5xx, 429, and transport errors retry. A 4xx will not fix itself.
 
 ### Preemptive generation is safe here
 
-The session runs the LLM against the in-progress transcript so the first token is ready
-at end of turn. That would be dangerous for a booking agent if it also executed tools
-speculatively — but in the SDK, `perform_tool_executions` runs *after* the
-`_wait_for_scheduled()` gate, so a preemptively generated turn produces the tool-call
-decision early and executes it only once the turn is committed. Latency win, no risk of
-a speculative write.
-
-`parallel_tool_calls` is disabled for a related reason: batching `check_availability`
-and `create_reservation` into one response would race the availability gate.
-
-### Handoff preserves the call
-
-`transfer_to_human` posts to `/handoff` with the structured details collected so far
-(name, phone, notes, every slot checked, every reservation touched) plus the last 20
-transcript turns. If the handoff endpoint itself fails, the summary is written to the
-error log rather than silently dropped, and the caller is never told a transfer
-succeeded when it did not.
+The session runs the LLM against the in-progress transcript so the first token is ready at
+end of turn. That would be dangerous if it also executed tools speculatively, but in the SDK
+`perform_tool_executions` runs after the `_wait_for_scheduled()` gate. The tool-call decision
+arrives early; execution waits for the turn to commit.
 
 ---
 
 ## Testing
 
-`tests/` drives the real agent against the real mock API over text. Each scenario
-asserts in three layers, weakest last:
+Two suites. `tests/test_standard_scenarios.py` drives the real agent against the real mock
+API over text, asserting in three layers, weakest last:
 
-1. **API state** — what actually got written. Fully deterministic.
-2. **Tool calls** — which tools ran, in what order. Fully deterministic.
-3. **Wording** — LLM-judged, because "offered real alternatives rather than inventing
-   one" has no exact string to match.
+1. **API state.** What actually got written. Deterministic.
+2. **Tool calls.** Which ran, in what order. Deterministic.
+3. **Wording.** LLM-judged, because "offered real alternatives instead of inventing one" has
+   no exact string to match.
 
-Most assertions are in the first two layers on purpose; a suite that only judges
-transcripts passes while writing the wrong row to the database.
+Most assertions sit in the first two. A suite that only judges transcripts will pass while
+writing the wrong row to the database.
 
-Beyond the seven standard scenarios, the suite covers a persistent API outage
-(escalates instead of stalling), a party of twelve (hands off with context), and an
-out-of-grid time (explains it instead of claiming availability).
+`tests/test_tool_layer.py` calls tools directly with no LLM, covering the safety gates a
+well-behaved model never trips. It runs in about a second.
 
-See [EVALUATION_RESULTS.md](EVALUATION_RESULTS.md) for the current run: 10/10 scenarios
-and 33/33 tool-layer tests, with zero duplicate writes.
+Beyond the seven standard scenarios: a persistent API outage (escalates instead of stalling),
+a party of twelve (hands off with context), and an out-of-grid time (explains it instead of
+claiming availability).
 
-### Why latency is ~1.8 s, and what would actually fix it
+Current run: 10/10 scenarios, 37/37 tool-layer tests, zero duplicate writes.
 
-Measured p50 end-of-speech to first audio is **~1,800 ms**, against the ~900 ms this
-pipeline should reach. I'd rather show the diagnosis than apologise for the number.
+---
 
-The per-stage split says which component owns it:
+## Latency, and what would fix it
+
+Measured p50 from end of speech to first audio is **~1,800 ms**, against the ~900 ms this
+pipeline should reach. The per-stage split says which component owns it:
 
 | Stage | p50 |
 |---|---:|
@@ -329,9 +280,8 @@ The per-stage split says which component owns it:
 | **LLM time to first token** | **854 ms** |
 | TTS time to first byte | 154 ms |
 
-TTS is fine. The LLM dominates — so I measured *why*, rather than assuming. Run it
-yourself with `uv run python -m evals.latency_probe`, which holds everything constant
-and varies one thing at a time:
+TTS is fine. The LLM dominates, so I measured why instead of guessing.
+`uv run python -m evals.latency_probe` holds everything constant and varies one thing:
 
 | Configuration | p50 TTFT | Input tokens | Cached |
 |---|---:|---:|---:|
@@ -341,145 +291,121 @@ and varies one thing at a time:
 | + explicit `prompt_cache_key` | 749 ms | 2,104 | 2,048 |
 | `gpt-4.1-nano` instead | 625 ms | 2,104 | 2,048 |
 
-**An 8-token prompt with no tools still takes 635 ms.** That's ~75% of the total, and it
-is nothing to do with this codebase — it's the round trip from India to OpenAI's US
-origin. Confirmed independently: ICMP to `api.openai.com` is 7 ms and TLS completes in
-28 ms, so the request reaches a nearby edge instantly and then spends most of a second
-being backhauled.
+An 8-token prompt with no tools still takes 635 ms. That is ~75% of the total and has
+nothing to do with this codebase. It is the round trip from India to OpenAI's US origin.
+ICMP to `api.openai.com` is 7 ms and TLS completes in 28 ms, so the request reaches a nearby
+edge instantly and then spends most of a second being backhauled.
 
-Three things this rules out, each of which would have been a plausible guess:
+Three plausible guesses this rules out:
 
-- **Prompt size is not the problem.** The full 1,244-token system prompt adds ~50 ms.
-- **Prompt caching is already working**, and is not an available win — 2,048 of 2,104
-  input tokens are served from cache automatically. An explicit `prompt_cache_key`
-  moves the number by less than the run-to-run noise.
-- **Tool schemas cost ~140 ms**, which is real but second-order, and buying it back means
-  shortening the descriptions that make tool calling reliable.
+- **Prompt size.** The full 1,244-token system prompt adds ~50 ms.
+- **Prompt caching.** Already on: 2,048 of 2,104 tokens come from cache. An explicit
+  `prompt_cache_key` moves the number less than run-to-run noise.
+- **Tool schemas.** ~140 ms, real but second-order, and buying it back means shortening the
+  descriptions that keep tool calling reliable.
 
-**The fix is geography, not code.** Deploying the worker in a US region collapses the
-635 ms floor to ~50 ms and takes the turn to roughly 900 ms — while LiveKit continues to
-terminate the caller's media at an edge near them, so audio quality is unaffected. That
-is the standard split: media close to the user, inference close to the model.
+The fix is geography. A worker in a US region collapses the 635 ms floor to ~50 ms and takes
+the turn to roughly 900 ms, while LiveKit still terminates the caller's media at an edge near
+them. Media close to the user, inference close to the model.
 
-`gpt-4.1-nano` is a genuine 200 ms saving and I chose not to take it. This workload is
-scored on tool-calling reliability, and trading that for 200 ms is the wrong direction —
-the assessment explicitly prefers a smaller reliable system to a faster fragile one.
-
-Being able to say *which* stage owns the number, and then *why*, is the practical
-argument for the cascaded pipeline. A speech-to-speech model would have given one
-opaque number with nothing to decompose.
+`gpt-4.1-nano` is a genuine 200 ms saving and I did not take it. This workload is scored on
+tool-calling reliability, and the brief prefers a smaller reliable system to a faster fragile
+one. Worth revisiting behind an eval showing nano holds up.
 
 ---
 
 ## Known limitations
 
-- **Barge-in is not covered by the automated suite.** Text-mode tests cannot exercise
-  acoustic behaviour. T3 asserts the *semantics* of a mid-flow correction (the final
-  party size is what gets written); the acoustic side is configured
-  (`interruption.mode="adaptive"`, false-interruption resume) and shown in the demo.
-- **State is in memory.** `CallState` lives in the worker process, so a crash mid-call
-  loses collected details. See scaling below.
-- **Booking grid is narrow, and the agent learns it from seed data.** The mock API
-  accepts six times across three dates and does not expose that grid over HTTP, so
-  `rules.py` reads it from the fixed `starter/seed_data.json`. In production this
-  would be a `GET /schedule` call; the coupling is a workaround for a missing endpoint,
-  not a design preference.
-- **No caller authentication.** Anyone with a confirmation code can cancel a booking.
-  Real deployments need at least a phone-number match.
-- **English only.** `nova-3` is configured for `en-US`; multilingual is a config change,
-  not a redesign.
-- **Cost and latency are untuned for scale.** Single worker, no connection pooling
-  across sessions, no response caching.
+- **Barge-in is not in the automated suite.** Text-mode tests cannot exercise acoustics. T3
+  asserts the semantics of a mid-flow correction, so the final party size is what gets
+  written. The acoustic side is configuration plus the demo.
+- **State is in memory.** `CallState` lives in the worker process, so a crash mid-call loses
+  collected details.
+- **The booking calendar comes from seed data.** The mock API accepts six times across three
+  dates and does not expose that grid over HTTP, so `rules.py` reads
+  `starter/seed_data.json`. In production this would be a `GET /schedule` call. It is a
+  workaround for a missing endpoint, not a preference.
+- **No caller authentication.** Anyone with a confirmation code can cancel a booking. Real
+  deployments need at least a phone-number match.
+- **English only.** `nova-3` is set to `en-US`. Multilingual is config, not redesign.
+- **Untuned for scale.** Single worker, no connection pooling, no response caching.
 
 ---
 
 ## What I would change about the supplied API
 
-- **`GET /availability` needs a whole-day variant, and the grid needs an endpoint.**
-  This is the single most consequential gap. Checking one slot at a time forces a round
-  trip per candidate time — `find_available_times` issues six concurrent requests to
-  answer one ordinary question. Worse, there is no way to learn which dates and times
-  exist at all except by probing and collecting 422s, and an agent that cannot tell
-  "closed" from "full" will eventually tell a caller something untrue.
-- `PATCH /reservations/{id}` is not idempotent, unlike `POST`. A retried modify can
-  double-apply against a concurrent change; it should accept an `If-Match` / version.
-- Errors return codes but not remediation. `INVALID_SLOT` could include the valid times
-  for that date, which would remove an entire class of caller-facing dead ends.
-- Search by phone returns cancelled reservations mixed in with active ones; the client
-  filters them.
+- **`GET /availability` needs a whole-day variant, and the grid needs an endpoint.** The
+  biggest gap. One slot per request means a round trip per candidate time, and there is no
+  way to learn which dates and times exist except by probing and collecting 422s. An agent
+  that cannot tell "closed" from "full" will eventually tell a caller something untrue.
+- **`PATCH /reservations/{id}` is not idempotent** the way `POST` is. A retried modify can
+  double-apply against a concurrent change. It should take an `If-Match` or a version.
+- **Errors carry codes but no remedy.** `INVALID_SLOT` knows the valid times for that date
+  and does not say so.
+- **Search by phone returns cancelled bookings** mixed with active ones. The client filters.
 
 ---
 
 ## Deployment
 
-The agent runs on **LiveKit Cloud** and the frontend on Vercel. Putting the agent next to
-the media server removes a hop, and the agent is deployed to a US region deliberately —
-see the latency section above for why that is the single largest win available.
+The agent runs on LiveKit Cloud, the frontend on Vercel. Putting the agent next to the media
+server removes a hop, and it sits in a US region deliberately, for the reason in the latency
+section.
 
-Two consequences of the free plan are worth naming, since both are visible in the code:
+Two free-plan behaviours are visible in the code:
 
-- **Agents sleep.** On the free plan a deployed agent is shut down once its sessions end,
-  and the next caller waits 10–20 seconds for it to boot. In a voice product that is
-  indistinguishable from a broken page. The frontend therefore calls `POST /api/warmup`
-  on page load, which dispatches the agent to a throwaway room so the cold start overlaps
-  with the caller granting microphone access instead of following it. It is an
-  optimisation, not a guarantee: if warming fails the call still works, just slower, and
-  the failure never reaches the caller. A paid plan keeps the agent resident and makes
-  the warm-up unnecessary.
-- **The mock API runs inside the agent process** (`LUMA_EMBED_MOCK_API`), because LiveKit
-  requires the container to launch the agent directly rather than a script starting a
-  second service. That is right for assessment scaffolding and wrong for a real backend:
-  a production deployment points `LUMA_API_BASE_URL` at the restaurant's own API and
-  leaves the flag unset.
+**Agents sleep.** Once a deployed agent's sessions end it shuts down, and the next caller
+waits 10–20 seconds for it to boot. In a voice product that is indistinguishable from a
+broken page. The frontend calls `POST /api/warmup` on page load, dispatching the agent to a
+throwaway room so the cold start overlaps with the caller granting mic access. It is an
+optimisation: if warming fails the call still works, just slower, and the failure never
+reaches the caller. A paid plan keeps the agent resident and makes this unnecessary.
 
-The token endpoint mints LiveKit tokens without authentication, so it refuses to start
-unless `ALLOW_PUBLIC_DEMO` is set. That keeps an open endpoint a deliberate choice for a
-demo rather than an oversight; a real deployment authenticates the caller first.
+**The mock API runs inside the agent process** (`LUMA_EMBED_MOCK_API`), because LiveKit
+requires the container to launch the agent directly rather than a script starting a second
+service. Right for assessment scaffolding, wrong for a real backend. A production deployment
+points `LUMA_API_BASE_URL` at the restaurant's API and leaves the flag unset.
+
+`/api/token` mints LiveKit tokens without authentication, so it refuses to start unless
+`ALLOW_PUBLIC_DEMO` is set. That keeps an open endpoint a deliberate choice for a demo. A
+real deployment authenticates the caller first.
 
 ---
 
 ## Scaling
 
-**10 concurrent calls.** What is here, deployed. One worker process handles multiple
-sessions; LiveKit Cloud handles media. Move `CallState` to Redis keyed by room so a
-worker restart does not lose a call.
+**10 concurrent calls.** What is here. One worker handles multiple sessions; LiveKit handles
+media. Move `CallState` to Redis keyed by room so a restart does not lose a call.
 
-**100 concurrent calls.** Horizontal workers behind LiveKit's job dispatch, which
-already load-balances across registered workers — `num_idle_processes` keeps warm
-processes so no caller waits on a cold model load. Provider rate limits become the
-binding constraint before CPU does: Deepgram and Cartesia both need raised quotas, and
-the LLM needs either provisioned throughput or a fallback model on 429. Add per-session
-tracing (OpenTelemetry, already supported by the SDK) because grepping logs stops
-working at this point.
+**100.** Horizontal workers behind LiveKit's job dispatch, which already load-balances across
+registered workers. `num_idle_processes` keeps warm processes so nobody waits on a cold model
+load. Provider rate limits bind before CPU does: Deepgram and Cartesia need raised quotas,
+and the LLM needs provisioned throughput or a fallback model on 429. Add per-session tracing,
+because grepping logs stops working here.
 
-**1,000 concurrent calls.** Regional worker pools pinned near the media edge — a
-cross-region hop adds 80–150 ms to every turn and is the single largest avoidable
-latency. Batch and cache the reservation API behind a read replica for availability
-lookups, since availability reads dominate writes maybe 10:1. Warm-pool TTS
-connections. At this scale the economics favour re-evaluating a realtime model for the
-conversational parts while keeping the cascaded path for tool-heavy turns, but that is
-a measured decision, not an assumption.
+**1,000.** Regional worker pools near the media edge, since a cross-region hop adds 80–150 ms
+to every turn. Put availability reads behind a read replica; they outnumber writes maybe
+10:1. Warm-pool TTS connections. At this scale the economics justify re-examining a realtime
+model for conversational turns while keeping the cascaded path for tool-heavy ones, but that
+is a measured decision.
 
-**Cost per five-minute call** (rough, list prices): STT ~$0.03, LLM ~$0.01 at
-~15k tokens with caching, TTS ~$0.05 at ~1,800 characters, LiveKit media ~$0.01.
-About **$0.10 per call**, dominated by TTS. A realtime model would be roughly $0.60–0.80
-for the same call.
+**Cost per five-minute call**, list prices: STT ~$0.03, LLM ~$0.01 at ~15k tokens with
+caching, TTS ~$0.05 at ~1,800 characters, LiveKit media ~$0.01. About **$0.10**, dominated by
+TTS. The same call on a realtime model runs roughly $0.60–0.80.
 
 ---
 
-## Security notes
+## Security
 
-Phone numbers and names are PII. In this assessment build they appear in logs; a real
-deployment would redact them at the logging layer, keep transcripts encrypted with a
-short retention window, disable recordings by default, and keep provider keys in a
-secret manager rather than a `.env` file. LiveKit tokens are minted server-side by the
-Next.js route handler and scoped to a single room.
+Names and phone numbers are PII and currently appear in logs. A real deployment would redact
+at the logging layer, encrypt transcripts with a short retention window, keep recordings off
+by default, and move provider keys into a secret manager. LiveKit tokens are already minted
+server-side and scoped to a single room.
 
 ---
 
-## AI assistance disclosure
+## AI assistance
 
-This project was built with Claude (Anthropic) as a coding assistant, used for
-scaffolding, SDK research against current LiveKit documentation, and drafting. All
-architecture decisions, the tool design, the safety gates, and the evaluation strategy
-are mine, and I can explain and modify any part of the submitted code.
+Built with Claude (Anthropic) as a coding assistant, for scaffolding, SDK research against
+current LiveKit docs, and drafting. The architecture, tool design, safety gates, and
+evaluation strategy are mine, and I can explain or change any part of it.

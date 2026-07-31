@@ -5,12 +5,12 @@ Answers to `starter/ARCHITECTURE_QUESTIONS.md`.
 ### 1. Why this voice framework, STT, LLM, TTS, and transport?
 
 **LiveKit Agents** because the transport, turn detection, interruption handling, and
-metrics are one integrated stack rather than four libraries I have to keep in sync,
-and because its test framework lets the scenario suite drive the *same* agent object
-over text — the tests are not a parallel reimplementation.
+metrics are one integrated stack instead of four libraries I have to keep in sync. Its test framework
+also lets the scenario suite drive the same agent object over text, so the tests are not
+a parallel reimplementation.
 
 **Deepgram nova-3** for STT: streaming with interim results, which is what makes
-barge-in feel immediate, plus `keyterm` boosting. That last one is not cosmetic —
+barge-in feel immediate, plus `keyterm` boosting. That last one is not cosmetic:
 "LUMA" is otherwise transcribed as "Luna" often enough to break confirmation-code
 lookups.
 
@@ -27,8 +27,8 @@ experience, and WebRTC gets Opus at 48 kHz instead of the 8 kHz G.711 a phone li
 would impose. Better audio in means better transcription. A SIP trunk is an additive
 change, not a rewrite.
 
-I chose a **cascaded pipeline over a speech-to-speech model** deliberately — the
-reasoning is in the README under "Major decisions".
+The cascaded pipeline over speech-to-speech is a deliberate trade. Reasoning is in the
+README under "Major decisions".
 
 ### 2. How is session and reservation state stored?
 
@@ -55,19 +55,18 @@ is already the single place that state lives.
 ### 3. How do you cancel generation during barge-in?
 
 The framework handles it, which is a large part of why I chose it. On detected user
-speech it cancels the LLM stream and the TTS stream, stops playout, and — the part that
-actually matters for correctness — **truncates the assistant message in the chat
-context to only the portion the caller actually heard**. Without that, the model
-believes it said a sentence the caller never received, and the next turn is built on a
-false premise.
+speech it cancels the LLM and TTS streams, stops playout, and truncates the assistant
+message in the chat context to only the portion the caller actually heard. That last
+part is the one that matters for correctness. Without it the model believes it said a
+sentence the caller never received, and the next turn is built on a false premise.
 
 Configuration choices: `mode="adaptive"` so "mm-hm" does not count as an interruption,
-and `resume_false_interruption=True` with a 1.5 s timeout so a cough leaves the agent
-picking its sentence back up rather than sitting in dead air.
+and `resume_false_interruption=True` with a 1.5 s timeout, so a cough leaves the agent
+picking its sentence back up instead of sitting in dead air.
 
-Tool calls in flight are a separate concern: they complete rather than being cancelled,
-because a half-executed `POST` is worse than a wasted one. The idempotency key means a
-completed-but-discarded create is harmless.
+Tool calls already in flight complete instead of being cancelled, because a half-executed
+`POST` is worse than a wasted one. The idempotency key makes a completed-but-discarded
+create harmless.
 
 ### 4. How are tool arguments validated?
 
@@ -75,22 +74,19 @@ In `rules.py`, before anything reaches the network. Every argument is normalized
 first (`"6:30 PM"` → `18:30`, `"(310) 555-0199"` → `3105550199`, `"luma 4821"` →
 `LUMA-4821`) and then range-checked.
 
-The important design point is what a failure produces: an `ArgumentError` whose message
-is written **for the model to act on**, not for the caller to hear —
-`"'555-0199' has only 7 digits. Ask the caller to repeat their full ten-digit phone
-number."` It is raised as a `ToolError`, which the framework feeds back into the
-conversation, so a bad argument becomes a self-correcting turn instead of a 422 the
-caller experiences as a failure.
+The design point is what a failure produces. An `ArgumentError` carries a message written
+for the model to act on, not for the caller to hear: `"'555-0199' has only 7 digits. Ask
+the caller to repeat their full ten-digit phone number."` It is raised as a `ToolError`,
+which the framework feeds back into the conversation, so a bad argument becomes a
+self-correcting turn instead of a 422 the caller experiences as a failure.
 
 ### 5. How are duplicate writes prevented?
 
 Three layers, and only the first is load-bearing:
 
-1. **Content-derived idempotency key.** `Idempotency-Key` is a SHA-256 of name, phone,
-   date, time, and party size — not a per-call UUID. The model never sees it. Two
-   identical create attempts therefore carry the same key by construction, and the API
-   returns the original reservation. This is what makes duplicate writes *impossible*
-   rather than *unlikely*.
+1. **Content-derived idempotency key.** A SHA-256 of name, phone, date, time, and party
+   size, not a per-call UUID. The model never sees it. Two identical create attempts
+   carry the same key by construction and the API returns the original reservation.
 2. **In-process short-circuit.** If this call already created a booking with that
    fingerprint, the tool answers from memory without a network round trip.
 3. **`parallel_tool_calls=False`**, so the model cannot batch `check_availability` and
@@ -107,7 +103,7 @@ itself, so retrying it just adds latency before the same failure.
 The retry lives in the HTTP client, not the prompt. Two reasons. It makes "at most one
 retry" a guarantee instead of an instruction a model may or may not honour. And a blip
 that clears in half a second should not cost the caller an audible "let me try that
-again" — the mock API's synthetic 503 on `2026-08-16` is invisible to both the model
+again". The mock API's synthetic 503 on `2026-08-16` is invisible to both the model
 and the caller, which the T6 test asserts by inspecting the actual HTTP attempt log.
 
 When both attempts fail, the tool raises and the agent says so and offers a human. It
@@ -118,7 +114,7 @@ never fabricates a result.
 `transfer_to_human` posts to `/handoff` with two things: the **structured** state
 (name, phone, notes, every slot checked, every reservation touched, and why the
 escalation happened) and the last 20 turns of transcript. The structured part matters
-more — a human picking up the call should not have to read a transcript to learn the
+more. A human picking up the call should not have to read a transcript to learn the
 caller's phone number.
 
 If `/handoff` itself fails, the summary is written to the error log rather than
@@ -131,7 +127,7 @@ would be cut off mid-sentence.
 
 **Silence** is handled in `main.py` rather than the prompt, for the same reason a hand-off
 cannot be: no turn is produced, so there is nothing for the model to react to. The
-session's `user_away_timeout` fires the recovery — one check-in, then a goodbye and a
+session's `user_away_timeout` fires the recovery: one check-in, then a goodbye and a
 hang-up rather than a line held open on a caller who has gone.
 
 ### 8. Which production metrics and logs matter?
@@ -143,7 +139,7 @@ regresses. A single blended number is not actionable.
 
 This paid off immediately. The measured p50 is ~1,800 ms, the split pointed at the LLM,
 and `evals/latency_probe.py` then showed that ~75% of the LLM's 854 ms is transport from
-India to OpenAI's US origin — an 8-token prompt with no tools costs 635 ms from here.
+India to OpenAI's US origin. An 8-token prompt with no tools costs 635 ms from here.
 Prompt size and prompt caching turned out to be dead ends (caching is already serving
 2,048 of 2,104 tokens). The fix is deploying the worker in a US region, not touching the
 code. Without per-stage numbers I would have spent that time shortening prompts.
@@ -153,7 +149,7 @@ handoff reason distribution. An agent that never errors and never books is a bro
 agent that looks healthy.
 
 **Tool-call error rate by tool and by error code**, which is the early warning for a
-prompt regression — validation errors climbing means the model has started producing
+prompt regression. Validation errors climbing means the model has started producing
 worse arguments.
 
 **Duplicate-write rate**, which should be structurally zero; any non-zero value means
@@ -185,7 +181,7 @@ re-evaluation of realtime-vs-cascaded on measured cost.
 
 ### 11. How would you protect PII, recordings, transcripts, and secrets?
 
-Names and phone numbers are PII and currently appear in logs — acceptable for an
+Names and phone numbers are PII and currently appear in logs. Acceptable for an
 assessment, not for production. The changes: redact at the logging layer so PII never
 reaches disk in the first place; encrypt transcripts at rest with a short retention
 window (30 days is typical for dispute resolution); keep recordings off by default and
@@ -195,9 +191,9 @@ with rotation.
 LiveKit access tokens are already minted server-side by the Next.js route handler and
 scoped to a single room, so a leaked client token grants one room, not the project.
 
-The one genuine security hole in the current build is **no caller authentication** —
-anyone with a confirmation code can cancel a booking. A real deployment needs at minimum
-a match between the caller's number and the number on the reservation.
+The one genuine security hole in the current build is no caller authentication: anyone
+with a confirmation code can cancel a booking. A real deployment needs at minimum a match
+between the caller's number and the number on the reservation.
 
 ### 12. Estimate cost per five-minute call.
 
@@ -217,5 +213,5 @@ making the agent say less, not switching LLMs. Shorter replies improve both cost
 perceived latency, which is why the prompt caps replies at one or two sentences.
 
 For comparison, the same call on a realtime speech-to-speech model runs roughly
-$0.60–0.80 — about 7x — which is a large part of why the cascaded pipeline is the right
+$0.60–0.80, about 7x, which is a large part of why the cascaded pipeline is the right
 default for a tool-heavy workload.
