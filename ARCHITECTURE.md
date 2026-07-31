@@ -117,6 +117,10 @@ caller's phone number.
 If `/handoff` itself fails, the summary is written to the error log rather than
 dropped, and the caller is never told the transfer succeeded when it did not.
 
+**Silence** is handled in `main.py` rather than the prompt, for the same reason: no turn
+is produced, so there is nothing for the model to react to. The session's `user_away_timeout`
+fires the recovery.
+
 ### 8. Which production metrics and logs matter?
 
 **Latency, split by stage.** End-of-utterance delay, LLM time-to-first-token, and TTS

@@ -243,6 +243,35 @@ async def test_oversized_party_cannot_reach_the_api(agent, ctx):
         await agent.check_availability(ctx, date="2026-08-14", time="18:00", party_size=12)
 
 
+async def test_cancel_cannot_happen_in_the_same_turn_as_the_lookup(agent, ctx, caller_turns):
+    """Finding a booking and cancelling it in one breath gives no chance to object."""
+    caller_turns(1)
+    await agent.find_reservation(ctx, confirmation_code="LUMA-4821")
+
+    with pytest.raises(ToolError, match="only just found"):
+        await agent.cancel_reservation(ctx, confirmation_code="LUMA-4821")
+
+    found = await agent.api.search_reservations(confirmation_code="LUMA-4821")
+    assert found[0]["status"] == "confirmed", "nothing may be cancelled yet"
+
+    # Once the caller has spoken again, the cancellation is allowed through.
+    caller_turns(2)
+    await agent.cancel_reservation(ctx, confirmation_code="LUMA-4821")
+    found = await agent.api.search_reservations(confirmation_code="LUMA-4821")
+    assert found[0]["status"] == "cancelled"
+
+
+async def test_modify_cannot_happen_in_the_same_turn_as_the_lookup(agent, ctx, caller_turns):
+    caller_turns(1)
+    await agent.find_reservation(ctx, confirmation_code="LUMA-4821")
+
+    with pytest.raises(ToolError, match="only just found"):
+        await agent.modify_reservation(ctx, confirmation_code="LUMA-4821", party_size=4)
+
+    found = await agent.api.search_reservations(confirmation_code="LUMA-4821")
+    assert found[0]["party_size"] == 2, "the booking must be untouched"
+
+
 async def test_modify_requires_the_reservation_to_have_been_looked_up(agent, ctx):
     with pytest.raises(ToolError, match="find_reservation first"):
         await agent.modify_reservation(ctx, confirmation_code="LUMA-4821", party_size=4)
@@ -258,8 +287,10 @@ async def test_find_reservation_needs_at_least_one_search_key(agent, ctx):
         await agent.find_reservation(ctx)
 
 
-async def test_cancelled_reservations_are_not_offered_as_active(agent, ctx):
+async def test_cancelled_reservations_are_not_offered_as_active(agent, ctx, caller_turns):
+    caller_turns(1)
     await agent.find_reservation(ctx, confirmation_code="LUMA-4821")
+    caller_turns(2)  # the caller confirms the cancellation
     await agent.cancel_reservation(ctx, confirmation_code="LUMA-4821")
 
     fresh = ReservationAgent(api=agent.api, state=CallState(), today=TODAY)

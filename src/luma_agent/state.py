@@ -58,6 +58,11 @@ class CallState:
     # a correction invalidates whatever was proposed before it.
     proposal: BookingProposal | None = None
 
+    # Confirmation code -> the caller turn on which it was looked up. Changing or
+    # cancelling requires the caller to have spoken since, so a booking can never
+    # be altered in the same breath as finding it.
+    looked_up_at_turn: dict[str, int] = field(default_factory=dict)
+
     # Set only by a successful availability check. create_reservation refuses to
     # write a slot that is not in here, so the agent physically cannot book a
     # time it never verified.

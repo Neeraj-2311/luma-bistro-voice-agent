@@ -4,9 +4,9 @@ The number that matters is end-of-speech to first audio out. The pipeline report
 it in three pieces that arrive as separate events, so they are stitched together
 per turn and written once all three land:
 
-    eou_delay   silence -> "the caller is done talking"
-    llm_ttft    prompt sent -> first token back
-    tts_ttfb    first token -> first audio byte
+    eou_delay_ms   silence -> "the caller is done talking"
+    llm_ttft_ms    prompt sent -> first token back
+    tts_ttfb_ms    first token -> first audio byte
 
 Their sum is the gap the caller actually hears. Keeping them separate is the point:
 a blended number tells you a turn was slow, these tell you which vendor to call.
@@ -25,7 +25,8 @@ from livekit.agents.metrics import EOUMetrics, LLMMetrics, TTSMetrics
 logger = logging.getLogger("luma.metrics")
 
 # Which metric event fills which field. A turn is complete once all three are in.
-_FIELDS = {EOUMetrics: "eou_delay", LLMMetrics: "llm_ttft", TTSMetrics: "tts_ttfb"}
+# Field names carry the unit, matching total_ms, so a reader never has to guess.
+_FIELDS = {EOUMetrics: "eou_delay_ms", LLMMetrics: "llm_ttft_ms", TTSMetrics: "tts_ttfb_ms"}
 _ATTRS = {EOUMetrics: "end_of_utterance_delay", LLMMetrics: "ttft", TTSMetrics: "ttfb"}
 
 

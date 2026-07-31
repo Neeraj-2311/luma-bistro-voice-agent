@@ -13,6 +13,7 @@ from livekit.agents import (
     JobProcess,
     MetricsCollectedEvent,
     TurnHandlingOptions,
+    UserStateChangedEvent,
     cli,
     inference,
 )
@@ -38,6 +39,10 @@ logger = logging.getLogger("luma")
 KEYTERMS = ["Luma", "Luma Bistro", "LUMA", "reservation", "confirmation code", "party of"]
 
 DEFAULT_VOICE = "f786b574-daa5-4673-aa0c-cbe3e8534c02"
+
+# Long enough that a caller checking their calendar is not interrupted, short
+# enough that a dropped call does not sit open.
+SILENCE_TIMEOUT_S = 12.0
 
 
 def _prewarm(proc: JobProcess) -> None:
@@ -92,6 +97,10 @@ def _build_session(vad: silero.VAD) -> AgentSession:
         # check availability -> book is two steps; three leaves room for one
         # recovery step without letting the model loop on a failing tool.
         max_tool_steps=3,
+        # How long the caller can be silent before the agent checks in. A prompt
+        # rule cannot cover silence, because silence produces no turn for the
+        # model to respond to -- see the handler in the entrypoint.
+        user_away_timeout=SILENCE_TIMEOUT_S,
     )
 
 
@@ -107,6 +116,34 @@ async def entrypoint(ctx: JobContext) -> None:
     @session.on("metrics_collected")
     def _on_metrics(ev: MetricsCollectedEvent) -> None:
         latency.on_metrics(ev)
+
+    silence_checks = 0
+
+    @session.on("user_state_changed")
+    def _on_user_state(ev: UserStateChangedEvent) -> None:
+        """Recover a call the caller has gone quiet on.
+
+        Silence is the one failure a prompt cannot handle: no turn is produced, so
+        the model never gets a chance to react. The session reports the caller as
+        "away" after SILENCE_TIMEOUT_S, and this drives the recovery -- check in
+        once, then close the call politely rather than holding a dead line open.
+        """
+        nonlocal silence_checks
+        if ev.new_state != "away":
+            return
+
+        silence_checks += 1
+        logger.info("caller.silent", extra={"check": silence_checks})
+        if silence_checks == 1:
+            session.generate_reply(
+                instructions="The caller has gone quiet. Ask once, warmly and briefly, "
+                "whether they are still there."
+            )
+        else:
+            session.generate_reply(
+                instructions="The caller has been silent twice. Say you will let them go, "
+                "invite them to call back, and say goodbye. Do not ask another question."
+            )
 
     async def _shutdown() -> None:
         logger.info(

@@ -376,6 +376,7 @@ class ReservationAgent(Agent):
 
         for reservation in active:
             self._remember(reservation)
+            self.state.looked_up_at_turn[reservation["confirmation_code"]] = _user_turns(ctx)
 
         if len(active) > 1:
             listed = "; ".join(
@@ -413,7 +414,7 @@ class ReservationAgent(Agent):
             party_size: New guest count, or omit to keep it.
             notes: New notes, or omit to keep them.
         """
-        reservation = self._resolve(confirmation_code)
+        reservation = self._resolve(ctx, confirmation_code)
         try:
             changes: dict[str, Any] = {
                 "date": parse_date(date) if date else None,
@@ -459,7 +460,7 @@ class ReservationAgent(Agent):
         Args:
             confirmation_code: Code of the reservation found earlier.
         """
-        reservation = self._resolve(confirmation_code)
+        reservation = self._resolve(ctx, confirmation_code)
 
         if reservation.get("status") == "cancelled":
             return f"{rules.spell(reservation['confirmation_code'])} was already cancelled. Say so and do not cancel again."
@@ -512,11 +513,14 @@ class ReservationAgent(Agent):
             stored["_fingerprint"] = fingerprint
         self.state.reservations[reservation["confirmation_code"]] = stored
 
-    def _resolve(self, confirmation_code: str) -> dict[str, Any]:
-        """Map a spoken confirmation code to a reservation this call has already looked up.
+    def _resolve(self, ctx: RunContext, confirmation_code: str) -> dict[str, Any]:
+        """Map a spoken confirmation code to a reservation this call already looked up.
 
-        Tools take the confirmation code, never the internal reservation id, so the
-        model can only act on a booking it actually retrieved.
+        Two guarantees, both about not acting faster than the caller can object:
+        tools take the confirmation code rather than the internal reservation id, so
+        the model can only touch a booking it actually retrieved; and the caller must
+        have spoken since that lookup, so a reservation can never be changed or
+        cancelled in the same breath as finding it.
         """
         try:
             code = validate_confirmation_code(confirmation_code)
@@ -526,6 +530,13 @@ class ReservationAgent(Agent):
         reservation = self.state.reservations.get(code)
         if not reservation:
             raise ToolError(f"{code} has not been looked up yet. Call find_reservation first.")
+
+        found_at = self.state.looked_up_at_turn.get(code)
+        if found_at is not None and _user_turns(ctx) <= found_at:
+            raise ToolError(
+                "You have only just found this reservation. Read it back, say what would change, "
+                "and wait for the caller to agree before doing anything to it."
+            )
         return reservation
 
 

@@ -127,6 +127,18 @@ so a correction on the next turn arrived after the write. Making the read-back a
 artifact rather than a hoped-for behaviour turned "confirm before booking" into something
 the code guarantees. A correction now invalidates the previous proposal by construction.
 
+### Nothing is written in the same breath as the caller's words
+
+The same rule covers all three writes, in code rather than in the prompt. A booking
+cannot be created unless it matches a read-back the caller has since responded to, and
+a reservation cannot be modified or cancelled in the same turn it was looked up. In
+every case the caller must have spoken *after* hearing what is about to happen.
+
+Silence gets the same treatment. A prompt rule cannot handle a caller going quiet,
+because silence produces no turn for the model to respond to — so the session reports
+the caller as away after 12 seconds and `main.py` drives the recovery directly: check in
+once, then close the call politely rather than holding a dead line open.
+
 ### "That date is closed" and "that time is full" are different failures
 
 The mock API only holds three dates, and any other date 422s per-slot. The first version
