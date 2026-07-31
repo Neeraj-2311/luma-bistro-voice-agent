@@ -8,10 +8,8 @@ export interface AppConfig {
   supportsScreenShare: boolean;
   isPreConnectBufferEnabled: boolean;
 
-  logo: string;
   startButtonText: string;
   accent?: string;
-  logoDark?: string;
   accentDark?: string;
 
   audioVisualizerType?: 'bar' | 'wave' | 'grid' | 'radial' | 'aura';
@@ -44,9 +42,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
-  logo: '/lk-logo.svg',
   accent: '#b4541f',
-  logoDark: '/lk-logo-dark.svg',
   accentDark: '#e8a05c',
   startButtonText: 'Call the restaurant',
 
