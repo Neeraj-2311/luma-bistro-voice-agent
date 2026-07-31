@@ -13,7 +13,7 @@ from datetime import date as date_type
 from typing import Any
 
 from livekit.agents import Agent, RunContext, function_tool, get_job_context
-from livekit.agents.llm import ToolError
+from livekit.agents.llm import StopResponse, ToolError
 
 from . import api as luma_api
 from . import rules
@@ -565,23 +565,32 @@ class ReservationAgent(Agent):
 
 
 async def hang_up(reason: str) -> None:
-    """Let the current sentence finish, then end the call.
+    """End the call, then stop the agent from saying anything else.
 
-    Closing the room the moment a tool returns would cut the goodbye off mid-word,
-    so this waits for playout first. Callers that never hang up are worse than they
-    look on a plan with a small concurrent-session limit: each one holds a slot and
-    keeps billing three providers for silence.
+    Two things have to happen together. Deleting the room disconnects everyone,
+    and raising StopResponse suppresses the reply the model would otherwise
+    generate once the calling tool returns -- without it the agent says goodbye,
+    the tool returns, the model says goodbye again, and the farewell loops while
+    the line stays open.
+
+    Always raises, so it is the last statement in any tool that calls it.
     """
     job = get_job_context(required=False)
-    if job is None:  # tests drive the agent without a job context
-        return
+    if job is None:
+        # Only expected in tests, which drive tools without a job. In production
+        # this means the call cannot be ended, which is worth shouting about.
+        logger.warning("call.end_unavailable", extra={"reason": reason})
+        raise StopResponse
 
-    current = job.session.current_speech if job.session else None
-    if current is not None:
-        await current.wait_for_playout()
+    try:
+        await job.delete_room()
+        logger.info("call.ended", extra={"reason": reason})
+    except Exception:
+        # The caller has already heard the goodbye, so a failure here leaves a
+        # silent open line rather than a broken conversation. Log and stop talking.
+        logger.exception("call.end_failed", extra={"reason": reason})
 
-    logger.info("call.ended", extra={"reason": reason})
-    await job.delete_room()
+    raise StopResponse
 
 
 def _offer(alternatives: list[dict[str, Any]]) -> str:

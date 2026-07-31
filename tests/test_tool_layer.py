@@ -12,9 +12,9 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from livekit.agents.llm import ToolError
+from livekit.agents.llm import StopResponse, ToolError
 
-from luma_agent.agent import ReservationAgent
+from luma_agent.agent import ReservationAgent, hang_up
 from luma_agent.api import reservation_fingerprint
 from luma_agent.rules import (
     ArgumentError,
@@ -323,7 +323,9 @@ async def test_handoff_preserves_collected_details(agent, ctx):
     agent.state.phone = "4155550123"
     agent.state.record_availability("2026-08-14", "19:00", 8)
 
-    await agent.transfer_to_human(ctx, reason="Party of twelve")
+    # Ending a call raises StopResponse so the model cannot speak again afterwards.
+    with pytest.raises(StopResponse):
+        await agent.transfer_to_human(ctx, reason="Party of twelve")
 
     assert agent.state.handed_off
     summary = agent.state.summary()
@@ -337,8 +339,16 @@ async def test_handoff_preserves_collected_details(agent, ctx):
 
 async def test_end_call_says_goodbye_before_hanging_up(agent, ctx):
     """A sign-off returned as text would be cut off when the room closes."""
-    await agent.end_call(ctx, farewell="Thanks for calling, goodbye.")
+    with pytest.raises(StopResponse):
+        await agent.end_call(ctx, farewell="Thanks for calling, goodbye.")
     assert ctx.spoken == ["Thanks for calling, goodbye."]
+
+
+async def test_ending_a_call_stops_the_agent_talking(agent, ctx):
+    """The farewell loop: without StopResponse the model replies once the tool
+    returns, says goodbye again, and the line never actually closes."""
+    with pytest.raises(StopResponse):
+        await hang_up("test")
 
 
 async def test_transient_failure_is_retried_once_then_surfaced(agent, ctx):

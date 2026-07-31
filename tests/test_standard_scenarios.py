@@ -113,7 +113,10 @@ async def test_t5_cancel_existing_reservation(harness, judge_llm):
     assert not harness.writes(), "must not cancel before the caller confirms"
     await last_reply(result).judge(
         judge_llm,
-        intent="Reads back the reservation details and asks the caller to confirm the cancellation.",
+        intent=(
+            "Reads the reservation details back, then asks a question seeking agreement before "
+            "cancelling. Any wording that asks whether to go ahead counts."
+        ),
     )
 
     await harness.say("Yes, cancel it.")
