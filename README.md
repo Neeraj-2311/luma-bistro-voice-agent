@@ -68,6 +68,13 @@ uv run python -m evals.report         # runs pytest, writes EVALUATION_RESULTS.m
 uv run python -m evals.latency_probe  # decomposes LLM time-to-first-token
 ```
 
+Also in this repo:
+
+- **[EVALUATION_RESULTS.md](EVALUATION_RESULTS.md)** — the standard scenarios, tool calls,
+  duplicate-write rate, and measured latency.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — answers to the twelve questions in
+  `starter/ARCHITECTURE_QUESTIONS.md`.
+
 ---
 
 ## Architecture

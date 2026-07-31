@@ -34,12 +34,19 @@ reasoning is in the README under "Major decisions".
 
 Reservations live in the API. The agent holds only per-call state (`state.py`) in
 process memory: collected name and phone, which slots have been verified available,
-which reservations this call has touched, and whether a handoff happened.
+which reservations this call has touched and on which turn they were looked up, the
+booking last read back to the caller, and whether a handoff happened.
 
 That split is intentional. The chat context is the record of the *conversation*; it is
 not a safe place to keep facts the code needs to be right about, because it gets
 summarized, truncated, and paraphrased. Anything a safety gate depends on lives in
 `CallState`, not in the transcript.
+
+The clearest example is `BookingProposal`. It records exactly what was recited to the
+caller and on which turn, and `create_reservation` refuses to write anything that does
+not match it. That is only a guarantee because it is a structured record: reconstructing
+"what did I just read back?" by re-reading the transcript would inherit every ambiguity
+the transcript has.
 
 In-process memory is the honest limitation: a worker crash mid-call loses the collected
 details. Redis keyed by room name is the fix and is a small change, since `CallState`
@@ -117,9 +124,15 @@ caller's phone number.
 If `/handoff` itself fails, the summary is written to the error log rather than
 dropped, and the caller is never told the transfer succeeded when it did not.
 
-**Silence** is handled in `main.py` rather than the prompt, for the same reason: no turn
-is produced, so there is nothing for the model to react to. The session's `user_away_timeout`
-fires the recovery.
+The tool then says the transfer line and **ends the call**, because a hand-off that leaves
+the agent on the line is not a hand-off. It speaks that line itself rather than returning
+it for the model to say: the room closes as part of the same step, so text handed back
+would be cut off mid-sentence.
+
+**Silence** is handled in `main.py` rather than the prompt, for the same reason a hand-off
+cannot be: no turn is produced, so there is nothing for the model to react to. The
+session's `user_away_timeout` fires the recovery — one check-in, then a goodbye and a
+hang-up rather than a line held open on a caller who has gone.
 
 ### 8. Which production metrics and logs matter?
 
