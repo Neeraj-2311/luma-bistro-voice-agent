@@ -35,8 +35,8 @@ cd web && npm run dev                        # http://localhost:3000
 
 Click **Call the restaurant**, allow the microphone, and talk.
 
-To put it on a public URL, see **[DEPLOY.md](DEPLOY.md)** — Fly.io for the worker
-(deliberately in `us-east`, which is the latency fix below) and Vercel for the frontend.
+To put it on a public URL, see **[DEPLOY.md](DEPLOY.md)** — the worker runs in `us-east`
+(deliberately: it is the latency fix described below) and the frontend on Vercel.
 
 Run the scenario suite, and the latency diagnosis:
 

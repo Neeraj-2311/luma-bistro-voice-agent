@@ -50,7 +50,12 @@ def _prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load()
 
 
-server = AgentServer(setup_fnc=_prewarm)
+# Each idle process preloads Silero VAD, so the framework's production default of
+# ten of them needs several GB. Two keeps a warm process ready for the next caller
+# without sizing the machine around processes that are not on a call.
+IDLE_PROCESSES = int(os.getenv("LUMA_IDLE_PROCESSES", "2"))
+
+server = AgentServer(setup_fnc=_prewarm, num_idle_processes=IDLE_PROCESSES)
 
 
 def _build_session(vad: silero.VAD) -> AgentSession:

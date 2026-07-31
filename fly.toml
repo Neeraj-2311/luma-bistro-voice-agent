@@ -15,6 +15,9 @@ primary_region = "iad"   # US East (Virginia), nearest to OpenAI
   # The mock API runs inside this container, alongside the worker.
   LUMA_API_BASE_URL = "http://127.0.0.1:8000"
   LOG_LEVEL = "INFO"
+  # Each idle process preloads Silero VAD. Two fits 1GB with room for live calls;
+  # the framework's default of ten does not.
+  LUMA_IDLE_PROCESSES = "2"
 
 [http_service]
   # LiveKit's worker health endpoint. The worker itself needs no inbound traffic
@@ -36,7 +39,8 @@ primary_region = "iad"   # US East (Virginia), nearest to OpenAI
     path = "/"
 
 [[vm]]
-  # The pipeline is I/O-bound (three streaming providers), not compute-bound.
-  # Silero VAD is the only local model and it is small.
+  # The pipeline is I/O-bound (three streaming providers), not compute-bound, so
+  # a shared CPU is fine. Memory is the binding constraint: it is set by how many
+  # agent processes are resident, not by traffic. See LUMA_IDLE_PROCESSES above.
   size = "shared-cpu-1x"
   memory = "1gb"
