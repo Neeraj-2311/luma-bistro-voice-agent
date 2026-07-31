@@ -15,12 +15,21 @@ over WebRTC. Built on LiveKit Agents with a cascaded speech pipeline.
 
 ## Quick start
 
-You need accounts with LiveKit Cloud, Deepgram, OpenAI, and Cartesia. All four have a
-free tier that covers this.
+**Prerequisites**
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Node 20 or newer, for the frontend
+- Accounts with LiveKit Cloud, Deepgram, OpenAI, and Cartesia. All four have a free tier
+  that covers this.
+
+`uv sync` creates `.venv`, and every Python command below is prefixed with `uv run`, which
+uses that environment automatically — **there is no virtualenv to activate, in any
+terminal**. If you prefer, `source .venv/bin/activate` works and lets you drop the prefix.
+The frontend terminal is Node only and never touches the venv.
 
 ```bash
 # 1. Install
-uv sync
+uv sync                      # creates .venv from uv.lock
 npm --prefix web install
 
 # 2. Credentials — two files, because the agent and the frontend are separate processes
