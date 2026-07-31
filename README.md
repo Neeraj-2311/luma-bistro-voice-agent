@@ -35,10 +35,6 @@ cd web && npm run dev                        # http://localhost:3000
 
 Click **Call the restaurant**, allow the microphone, and talk.
 
-To put it on a public URL, see **[DEPLOY.md](DEPLOY.md)** — the agent deploys to LiveKit
-Cloud in `us-east` (deliberately: it is the latency fix described below) and the frontend
-to Vercel.
-
 Run the scenario suite, and the latency diagnosis:
 
 ```bash
@@ -47,9 +43,6 @@ uv run python -m evals.latency_probe  # decomposes LLM time-to-first-token
 ```
 
 ---
-
-New to the code? Start with **[CODE_WALKTHROUGH.md](CODE_WALKTHROUGH.md)** — every
-file in one sentence, and every design decision with its reasoning.
 
 ## Architecture
 
@@ -312,6 +305,34 @@ opaque number with nothing to decompose.
   for that date, which would remove an entire class of caller-facing dead ends.
 - Search by phone returns cancelled reservations mixed in with active ones; the client
   filters them.
+
+---
+
+## Deployment
+
+The agent runs on **LiveKit Cloud** and the frontend on Vercel. Putting the agent next to
+the media server removes a hop, and the agent is deployed to a US region deliberately —
+see the latency section above for why that is the single largest win available.
+
+Two consequences of the free plan are worth naming, since both are visible in the code:
+
+- **Agents sleep.** On the free plan a deployed agent is shut down once its sessions end,
+  and the next caller waits 10–20 seconds for it to boot. In a voice product that is
+  indistinguishable from a broken page. The frontend therefore calls `POST /api/warmup`
+  on page load, which dispatches the agent to a throwaway room so the cold start overlaps
+  with the caller granting microphone access instead of following it. It is an
+  optimisation, not a guarantee: if warming fails the call still works, just slower, and
+  the failure never reaches the caller. A paid plan keeps the agent resident and makes
+  the warm-up unnecessary.
+- **The mock API runs inside the agent process** (`LUMA_EMBED_MOCK_API`), because LiveKit
+  requires the container to launch the agent directly rather than a script starting a
+  second service. That is right for assessment scaffolding and wrong for a real backend:
+  a production deployment points `LUMA_API_BASE_URL` at the restaurant's own API and
+  leaves the flag unset.
+
+The token endpoint mints LiveKit tokens without authentication, so it refuses to start
+unless `ALLOW_PUBLIC_DEMO` is set. That keeps an open endpoint a deliberate choice for a
+demo rather than an oversight; a real deployment authenticates the caller first.
 
 ---
 
