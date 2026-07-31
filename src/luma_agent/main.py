@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
+import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -48,6 +51,38 @@ SILENCE_TIMEOUT_S = 12.0
 def _prewarm(proc: JobProcess) -> None:
     """Load the VAD weights once per worker process, not once per call."""
     proc.userdata["vad"] = silero.VAD.load()
+
+
+def _serve_mock_api_in_background() -> None:
+    """Host the assessment's mock reservation API inside this process.
+
+    Demo deployments only. LiveKit Cloud requires the container to launch the agent
+    directly, with no wrapper script starting a second service, so the API that
+    would normally be its own deployment runs on a background thread here instead.
+
+    Only the main process serves it; the spawned job processes reach it over
+    localhost. A real deployment points LUMA_API_BASE_URL at the restaurant's own
+    booking system and none of this runs.
+    """
+    if multiprocessing.current_process().name != "MainProcess":
+        return
+
+    import threading
+
+    import uvicorn
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "starter"))
+    from app import app as mock_api  # type: ignore[import-not-found]
+
+    def _run() -> None:
+        uvicorn.run(mock_api, host="127.0.0.1", port=8000, log_level="warning")
+
+    threading.Thread(target=_run, daemon=True, name="mock-reservation-api").start()
+    logger.info("mock_api.embedded", extra={"url": "http://127.0.0.1:8000"})
+
+
+if os.getenv("LUMA_EMBED_MOCK_API") == "1":
+    _serve_mock_api_in_background()
 
 
 # Each idle process preloads Silero VAD, so the framework's production default of

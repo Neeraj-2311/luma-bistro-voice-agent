@@ -18,10 +18,15 @@ const LIVEKIT_URL = process.env.LIVEKIT_URL;
 export const revalidate = 0;
 
 export async function POST(req: Request) {
-  // make an exception for the vercel preview environment
-  if (process.env.NODE_ENV !== 'development' && process.env.IS_VERCEL_PREVIEW !== 'true') {
-    throw new Error(
-      'THIS API ROUTE IS INSECURE. DO NOT USE THIS ROUTE IN PRODUCTION WITHOUT AN AUTHENTICATION LAYER.'
+  // This route mints LiveKit tokens with no authentication, so anyone who finds the
+  // URL can start a session on this project. That is an accepted trade for a public
+  // demo with a spending cap, and refusing to start without ALLOW_PUBLIC_DEMO keeps
+  // it a deliberate choice rather than an oversight. A real deployment authenticates
+  // the caller here and issues a token scoped to them.
+  if (process.env.NODE_ENV !== 'development' && process.env.ALLOW_PUBLIC_DEMO !== 'true') {
+    return new NextResponse(
+      'Token endpoint disabled. Set ALLOW_PUBLIC_DEMO=true to expose it, or add auth.',
+      { status: 503 }
     );
   }
 

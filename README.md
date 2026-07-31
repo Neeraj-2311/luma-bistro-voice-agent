@@ -35,8 +35,9 @@ cd web && npm run dev                        # http://localhost:3000
 
 Click **Call the restaurant**, allow the microphone, and talk.
 
-To put it on a public URL, see **[DEPLOY.md](DEPLOY.md)** — the worker runs in `us-east`
-(deliberately: it is the latency fix described below) and the frontend on Vercel.
+To put it on a public URL, see **[DEPLOY.md](DEPLOY.md)** — the agent deploys to LiveKit
+Cloud in `us-east` (deliberately: it is the latency fix described below) and the frontend
+to Vercel.
 
 Run the scenario suite, and the latency diagnosis:
 

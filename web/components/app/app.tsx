@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { TokenSource } from 'livekit-client';
 import { useSession } from '@livekit/components-react';
 import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
@@ -18,6 +18,13 @@ const IN_DEVELOPMENT = process.env.NODE_ENV !== 'production';
 function AppSetup() {
   useDebugMode({ enabled: IN_DEVELOPMENT });
   useAgentErrors();
+
+  // Start the agent booting as soon as the page loads, so its cold start overlaps
+  // with the caller granting microphone access instead of following it. Purely an
+  // optimisation: if it fails the call still works, just with a longer wait.
+  useEffect(() => {
+    fetch('/api/warmup', { method: 'POST' }).catch(() => {});
+  }, []);
 
   return null;
 }

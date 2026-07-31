@@ -1,19 +1,21 @@
-# Agent worker + the starter's mock reservation API in one image.
+# Agent worker image. Works on LiveKit Cloud (`lk agent create`) and on any
+# container host that can run it always-on.
 #
-# They ship together on purpose: the mock API is the assessment's stand-in for a
-# real booking backend, and co-locating it keeps tool latency at ~3ms so the
-# numbers in EVALUATION_RESULTS.md reflect the voice pipeline rather than a
-# network hop between two hosts. A real deployment would point LUMA_API_BASE_URL
-# at the restaurant's actual API and drop the mock entirely.
+# The container launches the agent directly, with no wrapper script and nothing
+# backgrounded, which is what LiveKit Cloud requires. The starter's mock
+# reservation API is hosted in-process instead, enabled by LUMA_EMBED_MOCK_API.
+# A real deployment sets LUMA_API_BASE_URL to the restaurant's own booking system
+# and leaves that flag unset.
 
 FROM python:3.11-slim
 
-# Model weights and caches live here rather than in a read-only home directory.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    XDG_CACHE_HOME=/home/agent/.cache
+    XDG_CACHE_HOME=/home/agent/.cache \
+    LUMA_EMBED_MOCK_API=1 \
+    LUMA_API_BASE_URL=http://127.0.0.1:8000
 
 RUN useradd -m -u 1000 agent
 WORKDIR /app
@@ -28,15 +30,15 @@ COPY src/ ./src/
 COPY starter/ ./starter/
 RUN uv sync --frozen --no-dev
 
-# Silero VAD and the turn detector are downloaded at build time, not on the
-# first call. Without this the first caller of a cold worker waits for weights.
-RUN uv run python -m livekit.agents download-files || true
+# Fetch Silero VAD at build time. Without this the first caller on a cold worker
+# waits for the weights to download.
+RUN uv run python -m livekit.agents download-files
 
 RUN mkdir -p /app/logs && chown -R agent:agent /app /home/agent
 USER agent
 
-# LiveKit's worker health endpoint. Fly checks this to know the worker is live.
+# LiveKit's worker health endpoint.
 EXPOSE 8081
 
-COPY docker-entrypoint.sh /usr/local/bin/
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# `start` is production mode: register with LiveKit and wait for jobs.
+CMD ["uv", "run", "python", "-m", "luma_agent.main", "start"]

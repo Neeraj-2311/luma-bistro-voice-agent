@@ -7,16 +7,18 @@ dependencies = [
     "livekit-agents[cartesia,deepgram,openai,silero]~=1.6.7",
     "httpx~=0.28",
     "python-dotenv~=1.0",
+    # The starter's mock reservation API. It is assessment scaffolding, but demo
+    # deployments host it in-process, so it ships in the image.
+    "fastapi~=0.115",
+    "uvicorn~=0.34",
 ]
 
 [dependency-groups]
 dev = [
-    "fastapi>=0.141.1",
     "pytest~=8.3",
     "pytest-asyncio~=1.0",
     "pytest-json-report>=1.5.0",
     "ruff~=0.9",
-    "uvicorn>=0.52.0",
 ]
 
 [tool.pytest.ini_options]
