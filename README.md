@@ -46,18 +46,77 @@ uv run python -m evals.latency_probe  # decomposes LLM time-to-first-token
 
 ## Architecture
 
+### The path of one turn
+
 ```
-Browser ──WebRTC──> LiveKit Cloud ──> Agent worker (Python)
-                                        │
-                       ┌────────────────┼────────────────┐
-                       ▼                ▼                ▼
-                  Deepgram STT     OpenAI LLM      Cartesia TTS
-                   (streaming)     (tool calls)     (streaming)
-                                        │
-                                        ▼
-                              tools ──> HTTP client ──> Mock reservation API
-                                        (retry, idempotency, typed errors)
+  Caller speaks
+       │  Opus 48 kHz over WebRTC
+       ▼
+  LiveKit edge (nearest to the caller)
+       │
+       ▼
+  ┌─────────────────────── Agent worker, one process per call ───────────────────────┐
+  │                                                                                  │
+  │  1  VAD            Silero, local        is this speech or silence?               │
+  │        │                                                                         │
+  │        ▼                                                                         │
+  │  2  STT            Deepgram nova-3      streams partial text as they talk        │
+  │        │                                                                         │
+  │        ▼                                                                         │
+  │  3  Turn detector  LiveKit semantic     have they finished, or just paused?      │
+  │        │                                                    ── end of turn ──    │
+  │        ▼                                                                         │
+  │  4  LLM            gpt-4.1-mini         answer, or call a tool?                  │
+  │        │                                                                         │
+  │        ▼                                                                         │
+  │  5  Tools          validate → gate → HTTP client → reservation API               │
+  │        │                                 (retry, idempotency)                    │
+  │        ▼                                                                         │
+  │  6  LLM            turns the tool result into something speakable                │
+  │        │                                                                         │
+  │        ▼                                                                         │
+  │  7  TTS            Cartesia sonic-3     streams audio as tokens arrive           │
+  │                                                                                  │
+  └──────────────────────────────────┬───────────────────────────────────────────────┘
+                                     ▼
+                            LiveKit edge → caller hears the reply
 ```
+
+**1. VAD** — frame-level speech detection, running locally so it costs nothing per call.
+It gates what reaches the STT and is what notices the caller talking over the agent.
+
+**2. STT** — streaming with interim results. Partial text arrives *while* the caller is
+still speaking, which is what lets the next two stages start early.
+
+**3. Turn detection** — the decision that makes a voice agent feel human. A silence timer
+cuts people off mid-sentence ("my number is three one zero… five five five"); a semantic
+detector reads the transcript and the acoustics together and waits for a real ending.
+
+**4. LLM** — the only stage that decides anything. Tool calls are serialized
+(`parallel_tool_calls=False`) so it cannot check availability and book in the same breath.
+Generation starts on the in-progress transcript *before* end-of-turn is confirmed; tool
+execution still waits for the turn to commit, so nothing is written speculatively.
+
+**5. Tools** — arguments are normalized and range-checked, safety gates run, then one HTTP
+client owns retries and idempotency. Tools return sentences, not JSON, because the model
+reads them straight into speech.
+
+**6. LLM again** — the tool result comes back and becomes a spoken reply.
+
+**7. TTS** — streams audio chunk by chunk as tokens arrive rather than waiting for the
+whole sentence, so the caller hears the first word while the last is still being written.
+
+**If the caller interrupts**, VAD fires mid-reply: the LLM and TTS streams are cancelled,
+playback stops, and — the part that matters for correctness — the assistant's message is
+truncated in the chat context to only the words the caller actually heard. Without that,
+the next turn is built on a sentence they never received.
+
+**Where the latency numbers come from.** The three measurements in
+[EVALUATION_RESULTS.md](EVALUATION_RESULTS.md) are taken at exactly these boundaries:
+end-of-utterance delay at step 3, LLM time-to-first-token at step 4, TTS time-to-first-byte
+at step 7. Their sum is the gap the caller hears.
+
+### Modules
 
 | Module | Responsibility |
 |---|---|
