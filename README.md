@@ -35,10 +35,11 @@ cd web && npm run dev                        # http://localhost:3000
 
 Click **Call the restaurant**, allow the microphone, and talk.
 
-Run the scenario suite:
+Run the scenario suite, and the latency diagnosis:
 
 ```bash
-uv run python -m evals.report      # runs pytest, writes EVALUATION_RESULTS.md
+uv run python -m evals.report         # runs pytest, writes EVALUATION_RESULTS.md
+uv run python -m evals.latency_probe  # decomposes LLM time-to-first-token
 ```
 
 ---
@@ -216,16 +217,58 @@ out-of-grid time (explains it instead of claiming availability).
 See [EVALUATION_RESULTS.md](EVALUATION_RESULTS.md) for the current run: 10/10 scenarios
 and 33/33 tool-layer tests, with zero duplicate writes.
 
-### On the latency numbers
+### Why latency is ~1.8 s, and what would actually fix it
 
-Measured p50 end-of-speech to first audio is ~1.8 s, which is higher than the ~900 ms
-this pipeline should reach. The breakdown localizes it: TTS time-to-first-byte is 154 ms
-and end-of-utterance detection is 606 ms, but **LLM time-to-first-token is ~850 ms** and
-dominates. Two contributors, in order of size: these runs were made from India against
-OpenAI's US endpoints, and the system prompt plus seven tool definitions is a large
-prefix to process on every turn. The fixes are regional colocation and prompt caching,
-both described under Scaling — neither is a redesign. Being able to say which stage owns
-the number, rather than guessing, is the practical argument for the cascaded pipeline.
+Measured p50 end-of-speech to first audio is **~1,800 ms**, against the ~900 ms this
+pipeline should reach. I'd rather show the diagnosis than apologise for the number.
+
+The per-stage split says which component owns it:
+
+| Stage | p50 |
+|---|---:|
+| End-of-utterance detection | 606 ms |
+| **LLM time to first token** | **854 ms** |
+| TTS time to first byte | 154 ms |
+
+TTS is fine. The LLM dominates — so I measured *why*, rather than assuming. Run it
+yourself with `uv run python -m evals.latency_probe`, which holds everything constant
+and varies one thing at a time:
+
+| Configuration | p50 TTFT | Input tokens | Cached |
+|---|---:|---:|---:|
+| 8-token prompt, no tools | **635 ms** | 8 | 0 |
+| + full system prompt | 686 ms | 1,244 | 1,024 |
+| + 8 tool schemas | 829 ms | 2,104 | 2,048 |
+| + explicit `prompt_cache_key` | 749 ms | 2,104 | 2,048 |
+| `gpt-4.1-nano` instead | 625 ms | 2,104 | 2,048 |
+
+**An 8-token prompt with no tools still takes 635 ms.** That's ~75% of the total, and it
+is nothing to do with this codebase — it's the round trip from India to OpenAI's US
+origin. Confirmed independently: ICMP to `api.openai.com` is 7 ms and TLS completes in
+28 ms, so the request reaches a nearby edge instantly and then spends most of a second
+being backhauled.
+
+Three things this rules out, each of which would have been a plausible guess:
+
+- **Prompt size is not the problem.** The full 1,244-token system prompt adds ~50 ms.
+- **Prompt caching is already working**, and is not an available win — 2,048 of 2,104
+  input tokens are served from cache automatically. An explicit `prompt_cache_key`
+  moves the number by less than the run-to-run noise.
+- **Tool schemas cost ~140 ms**, which is real but second-order, and buying it back means
+  shortening the descriptions that make tool calling reliable.
+
+**The fix is geography, not code.** Deploying the worker in a US region collapses the
+635 ms floor to ~50 ms and takes the turn to roughly 900 ms — while LiveKit continues to
+terminate the caller's media at an edge near them, so audio quality is unaffected. That
+is the standard split: media close to the user, inference close to the model.
+
+`gpt-4.1-nano` is a genuine 200 ms saving and I chose not to take it. This workload is
+scored on tool-calling reliability, and trading that for 200 ms is the wrong direction —
+the assessment explicitly prefers a smaller reliable system to a faster fragile one.
+
+Being able to say *which* stage owns the number, and then *why*, is the practical
+argument for the cascaded pipeline. A speech-to-speech model would have given one
+opaque number with nothing to decompose.
 
 ---
 

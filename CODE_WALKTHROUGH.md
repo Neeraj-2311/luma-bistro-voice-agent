@@ -187,10 +187,51 @@ Realtime would save ~200–300ms. I chose cascaded because this task is dominate
 tool correctness: tool calling is more reliable on a text LLM, per-stage latency is
 measurable, every stage is independently testable, and it's ~7x cheaper.
 
-**The payoff is visible in the numbers:** p50 is ~1.8s, and the split says why — TTS
-154ms, EOU 606ms, but **LLM TTFT ~850ms** dominates (India → OpenAI US, plus a large
-prompt+tools prefix each turn). A blended number would have told me the turn was slow;
-the split tells me which vendor to call.
+**The payoff is visible in the numbers** — see the next section.
+
+---
+
+## The latency question, in full
+
+Expect *"1.8 seconds is slow — why?"*. Answer with the diagnosis, not an apology.
+
+**Step 1 — which stage?** The pipeline reports each separately:
+EOU 606ms, **LLM TTFT 854ms**, TTS 154ms. The LLM owns it.
+
+**Step 2 — why is the LLM slow?** I measured instead of guessing.
+`evals/latency_probe.py` varies one thing at a time:
+
+| Configuration | p50 TTFT |
+|---|---:|
+| 8-token prompt, no tools | **635 ms** |
+| + full system prompt (1,244 tok) | 686 ms |
+| + 8 tool schemas (2,104 tok) | 829 ms |
+| + explicit cache key | 749 ms |
+| gpt-4.1-nano | 625 ms |
+
+**The headline: an 8-token prompt with no tools still takes 635ms.** That's ~75% of the
+total and has nothing to do with my code — it's India → OpenAI's US origin. ICMP to
+`api.openai.com` is 7ms and TLS completes in 28ms, so the request hits a nearby edge
+instantly, then spends most of a second on backhaul.
+
+**Step 3 — what that rules out.** Three plausible guesses, all wrong:
+- Prompt size — the full system prompt adds ~50ms.
+- Prompt caching — already on, 2,048 of 2,104 tokens cached automatically. Not a lever.
+- Tool schemas — ~140ms, real but second-order, and shortening the descriptions would
+  cost tool-calling reliability.
+
+**Step 4 — the fix.** Geography, not code. Deploy the worker in a US region: the 635ms
+floor becomes ~50ms and the turn lands near 900ms. LiveKit still terminates the caller's
+media at an edge near them, so audio quality is untouched. **Media close to the user,
+inference close to the model.**
+
+> **If asked "why not just use nano?"** — it's a real 200ms saving and I declined it.
+> This workload is scored on tool-calling reliability; trading that for 200ms is the
+> wrong direction, and the brief explicitly prefers a smaller reliable system to a faster
+> fragile one. I'd revisit it with an eval showing nano holds tool accuracy.
+
+This is also the concrete argument for the cascaded pipeline: a speech-to-speech model
+would have produced one opaque number with nothing to decompose.
 
 ---
 

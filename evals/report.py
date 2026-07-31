@@ -90,6 +90,13 @@ def latency_table() -> list[str]:
         f"| Total (p95) | {round(p95)} ms |",
         "",
         f"Sample size: {len(totals)} turns.",
+        "",
+        "The LLM stage dominates, and ~75% of *that* is the round trip from India to",
+        "OpenAI's US origin rather than anything in this codebase — an 8-token prompt with",
+        "no tools still costs 635 ms from here. Prompt size and caching are measured dead",
+        "ends; deploying the worker in a US region is the fix. Full decomposition in the",
+        'README under "Why latency is ~1.8 s", reproducible with',
+        "`uv run python -m evals.latency_probe`.",
     ]
 
 

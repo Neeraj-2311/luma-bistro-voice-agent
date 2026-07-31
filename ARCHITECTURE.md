@@ -128,6 +128,13 @@ time-to-first-byte are collected per turn and summed (`metrics.py`). The sum is
 what the caller experiences; the split is what tells you which vendor to call when it
 regresses. A single blended number is not actionable.
 
+This paid off immediately. The measured p50 is ~1,800 ms, the split pointed at the LLM,
+and `evals/latency_probe.py` then showed that ~75% of the LLM's 854 ms is transport from
+India to OpenAI's US origin — an 8-token prompt with no tools costs 635 ms from here.
+Prompt size and prompt caching turned out to be dead ends (caching is already serving
+2,048 of 2,104 tokens). The fix is deploying the worker in a US region, not touching the
+code. Without per-stage numbers I would have spent that time shortening prompts.
+
 **Task success, not uptime.** Reservations created per call started, handoff rate, and
 handoff reason distribution. An agent that never errors and never books is a broken
 agent that looks healthy.
