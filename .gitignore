@@ -1,0 +1,13 @@
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+.next/
+logs/
+*.jsonl
+!evals/results/*.jsonl
+.gstack/
