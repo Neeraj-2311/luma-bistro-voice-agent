@@ -153,13 +153,7 @@ async def _close_after_goodbye(session: AgentSession) -> None:
     await hang_up("caller silent")
 
 
-# Overridable so a local worker can register under its own name. Sharing a name with
-# the deployed agent makes LiveKit load-balance between them, and half your test calls
-# would quietly be answered by production.
-AGENT_NAME = os.getenv("LUMA_AGENT_NAME", "luma-bistro")
-
-
-@server.rtc_session(agent_name=AGENT_NAME)
+@server.rtc_session(agent_name="luma-bistro")
 async def entrypoint(ctx: JobContext) -> None:
     ctx.log_context_fields = {"room": ctx.room.name}
 
