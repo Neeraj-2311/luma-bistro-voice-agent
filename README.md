@@ -15,25 +15,42 @@ over WebRTC. Built on LiveKit Agents with a cascaded speech pipeline.
 
 ## Quick start
 
+You need accounts with LiveKit Cloud, Deepgram, OpenAI, and Cartesia. All four have a
+free tier that covers this.
+
 ```bash
-# 1. Dependencies
+# 1. Install
 uv sync
-cd web && npm install && cd ..
+npm --prefix web install
 
-# 2. Secrets — fill in the four provider keys
-cp .env.example .env
-
-# 3. Mock reservation API (terminal 1)
-cd starter && docker compose up --build      # or: uv run uvicorn app:app --app-dir starter
-
-# 4. Agent worker (terminal 2)
-uv run python -m luma_agent.main dev
-
-# 5. Browser frontend (terminal 3)
-cd web && npm run dev                        # http://localhost:3000
+# 2. Credentials — two files, because the agent and the frontend are separate processes
+cp .env.example .env                 # agent: LiveKit + Deepgram + OpenAI + Cartesia
+cp web/.env.example web/.env.local   # frontend: the same LiveKit values
 ```
 
-Click **Call the restaurant**, allow the microphone, and talk.
+Fill both in. The frontend reuses the agent's LiveKit URL, key, and secret, and needs
+`AGENT_NAME=luma-bistro` to match the name the worker registers under.
+
+```bash
+# 3. Mock reservation API                        (terminal 1)
+uv run uvicorn app:app --app-dir starter --port 8000
+#    or, if you prefer the starter's container:  cd starter && docker compose up --build
+
+# 4. Agent worker                                (terminal 2)
+uv run python -m luma_agent.main dev
+
+# 5. Frontend                                    (terminal 3)
+npm --prefix web run dev                         # http://localhost:3000
+```
+
+Terminal 2 should print `registered worker` with `"agent_name": "luma-bistro"`. That line
+means the agent is connected and waiting; without it the page loads but nobody answers.
+
+Open <http://localhost:3000>, click **Call the restaurant**, allow the microphone, and talk.
+
+To try the agent without a browser, `uv run python -m luma_agent.main console` runs a voice
+session straight in the terminal. Note that ending a call is a no-op there — the SDK skips
+room deletion in console mode — so use the browser to exercise that path.
 
 Run the scenario suite, and the latency diagnosis:
 
