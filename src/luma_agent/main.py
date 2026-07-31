@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import multiprocessing
 import os
@@ -22,7 +23,7 @@ from livekit.agents import (
 )
 from livekit.plugins import cartesia, deepgram, openai, silero
 
-from .agent import ReservationAgent
+from .agent import ReservationAgent, hang_up
 from .api import LumaAPI
 from .metrics import LatencyTracker
 from .prompts import GREETING
@@ -144,6 +145,14 @@ def _build_session(vad: silero.VAD) -> AgentSession:
     )
 
 
+async def _close_after_goodbye(session: AgentSession) -> None:
+    """Sign off and end a call the caller has abandoned."""
+    await session.say(
+        "It seems we've lost you. Do call back any time and we'll get that table booked. Goodbye."
+    ).wait_for_playout()
+    await hang_up("caller silent")
+
+
 @server.rtc_session(agent_name="luma-bistro")
 async def entrypoint(ctx: JobContext) -> None:
     ctx.log_context_fields = {"room": ctx.room.name}
@@ -180,10 +189,9 @@ async def entrypoint(ctx: JobContext) -> None:
                 "whether they are still there."
             )
         else:
-            session.generate_reply(
-                instructions="The caller has been silent twice. Say you will let them go, "
-                "invite them to call back, and say goodbye. Do not ask another question."
-            )
+            # Second strike: the line is dead. Say goodbye and hang up rather than
+            # holding the session open on a caller who has gone.
+            asyncio.create_task(_close_after_goodbye(session))
 
     async def _shutdown() -> None:
         logger.info(

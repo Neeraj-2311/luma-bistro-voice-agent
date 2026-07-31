@@ -34,10 +34,30 @@ def agent(api):
     return ReservationAgent(api=api, state=CallState(), today=TODAY)
 
 
+class _FakeSpeech:
+    """Stand-in for a SpeechHandle: nothing to play, so playout is instant."""
+
+    async def wait_for_playout(self) -> None:
+        return None
+
+
 @pytest.fixture
 def ctx():
-    """The reservation tools read only `session`; history is empty by default."""
-    return SimpleNamespace(session=SimpleNamespace(history=SimpleNamespace(items=[])))
+    """Stand-in RunContext.
+
+    The tools read `session.history` and call `session.say()`. Spoken lines are
+    recorded on `ctx.spoken` so tests can assert on what the caller would hear.
+    """
+    spoken: list[str] = []
+
+    def say(text: str) -> _FakeSpeech:
+        spoken.append(text)
+        return _FakeSpeech()
+
+    return SimpleNamespace(
+        session=SimpleNamespace(history=SimpleNamespace(items=[]), say=say),
+        spoken=spoken,
+    )
 
 
 @pytest.fixture
@@ -310,6 +330,15 @@ async def test_handoff_preserves_collected_details(agent, ctx):
     assert "Priya Raman" in summary
     assert "4155550123" in summary
     assert "2026-08-14 19:00" in summary
+
+    # The caller must hear the transfer before the line closes, not after.
+    assert any("passing you to one of our hosts" in line for line in ctx.spoken)
+
+
+async def test_end_call_says_goodbye_before_hanging_up(agent, ctx):
+    """A sign-off returned as text would be cut off when the room closes."""
+    await agent.end_call(ctx, farewell="Thanks for calling, goodbye.")
+    assert ctx.spoken == ["Thanks for calling, goodbye."]
 
 
 async def test_transient_failure_is_retried_once_then_surfaced(agent, ctx):

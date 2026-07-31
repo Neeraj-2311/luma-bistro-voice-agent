@@ -12,7 +12,7 @@ import logging
 from datetime import date as date_type
 from typing import Any
 
-from livekit.agents import Agent, RunContext, function_tool
+from livekit.agents import Agent, RunContext, function_tool, get_job_context
 from livekit.agents.llm import ToolError
 
 from . import api as luma_api
@@ -476,11 +476,30 @@ class ReservationAgent(Agent):
         logger.info("reservation.cancelled", extra={"code": cancelled["confirmation_code"]})
         return f"Cancelled {rules.spell(cancelled['confirmation_code'])}. Confirm the cancellation to the caller."
 
+    @function_tool()
+    async def end_call(self, ctx: RunContext, farewell: str) -> None:
+        """Say goodbye and hang up. Call this once the caller is finished.
+
+        Use it when they say goodbye, confirm they need nothing else, or the booking
+        is done and they have no further questions. Do not use it to escape a problem
+        -- offer a human host instead.
+
+        Args:
+            farewell: The exact sign-off to say, one short sentence.
+        """
+        # Speak the farewell here rather than returning it, so the words are on the
+        # wire before the room closes. Returning a string would hand it back to the
+        # model and the call would end mid-sentence.
+        await ctx.session.say(farewell).wait_for_playout()
+        await hang_up("caller finished")
+
     # --- Escalation ---------------------------------------------------------
 
     @function_tool()
-    async def transfer_to_human(self, ctx: RunContext, reason: str) -> str:
+    async def transfer_to_human(self, ctx: RunContext, reason: str) -> None:
         """Hand the call to a human host, passing along everything collected so far.
+
+        This says goodbye and ends the call, so it is the last thing you do.
 
         Args:
             reason: One short sentence on why a person is needed.
@@ -500,10 +519,15 @@ class ReservationAgent(Agent):
 
         self.state.handed_off = True
         logger.info("handoff", extra={"reason": reason, "handoff_id": queued})
-        return (
-            "A host has the caller's details and is being connected. Tell the caller you are "
-            "transferring them now and that they will not need to repeat anything."
-        )
+
+        # A transfer that leaves the agent on the line is not a transfer. This is the
+        # simulated hand-off: the details are queued for a host, the caller is told
+        # so, and the agent gets out of the way.
+        await ctx.session.say(
+            "I'm passing you to one of our hosts now. They have your details, "
+            "so you won't need to repeat anything. Thanks for calling Luma Bistro."
+        ).wait_for_playout()
+        await hang_up(f"handed off: {reason}")
 
     # --- Internals ----------------------------------------------------------
 
@@ -538,6 +562,26 @@ class ReservationAgent(Agent):
                 "and wait for the caller to agree before doing anything to it."
             )
         return reservation
+
+
+async def hang_up(reason: str) -> None:
+    """Let the current sentence finish, then end the call.
+
+    Closing the room the moment a tool returns would cut the goodbye off mid-word,
+    so this waits for playout first. Callers that never hang up are worse than they
+    look on a plan with a small concurrent-session limit: each one holds a slot and
+    keeps billing three providers for silence.
+    """
+    job = get_job_context(required=False)
+    if job is None:  # tests drive the agent without a job context
+        return
+
+    current = job.session.current_speech if job.session else None
+    if current is not None:
+        await current.wait_for_playout()
+
+    logger.info("call.ended", extra={"reason": reason})
+    await job.delete_room()
 
 
 def _offer(alternatives: list[dict[str, Any]]) -> str:

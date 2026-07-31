@@ -121,7 +121,7 @@ at step 7. Their sum is the gap the caller hears.
 | Module | Responsibility |
 |---|---|
 | `src/luma_agent/main.py` | Builds the voice pipeline, starts one agent per call |
-| `src/luma_agent/agent.py` | The eight tools — everything the agent can do |
+| `src/luma_agent/agent.py` | The nine tools — everything the agent can do |
 | `src/luma_agent/api.py` | Reservation API client: retries, timeouts, idempotency |
 | `src/luma_agent/rules.py` | What inputs are legal, and which dates/times exist |
 | `src/luma_agent/state.py` | Per-call memory: collected details, verified slots, read-back |
@@ -194,7 +194,17 @@ every case the caller must have spoken *after* hearing what is about to happen.
 Silence gets the same treatment. A prompt rule cannot handle a caller going quiet,
 because silence produces no turn for the model to respond to — so the session reports
 the caller as away after 12 seconds and `main.py` drives the recovery directly: check in
-once, then close the call politely rather than holding a dead line open.
+once, then say goodbye and hang up rather than holding a dead line open.
+
+### The agent can hang up, and always says goodbye first
+
+Three paths end a call: the caller is done (`end_call`), the caller is handed to a person
+(`transfer_to_human`), or the caller has gone quiet twice. All three route through one
+helper that waits for the farewell to finish playing before closing the room — returning
+the sign-off as text instead would cut it off mid-word, because the room would already be
+gone. A transfer that leaves the agent on the line is not a transfer, and an abandoned
+call that never closes holds a concurrent session and keeps billing three providers for
+silence.
 
 ### "That date is closed" and "that time is full" are different failures
 
